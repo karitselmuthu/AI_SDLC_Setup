@@ -35,6 +35,9 @@ STEPS = {
     "fit": ("fit.md", "enterprise-fit.md", "Security, compliance and enterprise architecture reviewers assess the fit",
             ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
              "target-architecture.md"]),
+    "delivery": ("delivery.md", "delivery-approach.md", "Delivery lead and pursuit lead review the roadmap and responsibilities",
+                 ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+                  "target-architecture.md", "enterprise-fit.md"]),
 }
 
 
@@ -45,15 +48,18 @@ def must_cover(source, pattern, what):
         src = briefs / source
         ids = sorted(set(re.findall(pattern, src.read_text()))) if src.exists() else []
         missing = [i for i in ids if i not in text]
-        return (f"The {what} is missing {', '.join(missing)}. Add a row for each, with a verdict or status "
-                "and the reason. Reply with the complete updated document, same sections.") if missing else ""
+        return (f"The {what} is missing {', '.join(missing)}. Add a row for each, saying how it is handled or "
+                "its verdict/status, with the reason. Reply with the complete updated document, same sections."
+                ) if missing else ""
     return check
 
 
 untraced = must_cover("requirements.md", r"R-\d{3}", "requirement traceability table")  # design: every requirement
 unassessed = must_cover("target-architecture.md", r"\b[KI]\d+\b", "fit assessment table")  # fit: every component/interface
 
-CHECKS = {"design": untraced, "fit": unassessed}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+unhandled = must_cover("enterprise-fit.md", r"\bE\d+\b", "exceptions and fit items table")  # delivery: every exception
+
+CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -61,6 +67,8 @@ def run_step(name, files):
     template, out_name, reviewer, prior = STEPS[name]
     briefs = HERE / "briefs"
     docs = [briefs / p for p in prior if (briefs / p).exists()] + [pathlib.Path(f).resolve() for f in files]
+    if not docs:
+        sys.exit(f"{name}: nothing to read. Pass source files, or run the earlier steps first.")
     missing = [str(d) for d in docs if not d.is_file()]
     if missing:
         sys.exit(f"not found: {missing}")
@@ -87,10 +95,11 @@ def assess(files): run_step("assess", files)      # 3. current-state view
 def options(files): run_step("options", files)    # 4. solution options + recommendation
 def design(files): run_step("design", files)      # 5. target architecture + traceability
 def fit(files): run_step("fit", files)            # 6. enterprise fit: standards, exceptions, compliance questions
+def delivery(files): run_step("delivery", files)  # 7. phases, dependencies, migration, roles, risks
 
 
 if __name__ == "__main__":
     cmd, *files = sys.argv[1:] or [""]
-    if cmd not in STEPS or not files:
+    if cmd not in STEPS:
         sys.exit(__doc__ + "Steps: " + ", ".join(STEPS))
     run_step(cmd, files)

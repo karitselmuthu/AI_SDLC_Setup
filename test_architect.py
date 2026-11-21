@@ -204,3 +204,59 @@ def test_fit_template_covers_step_6_outputs():
                    "one row for every design component", "commonly expected, not stated by client",
                    "do not give legal conclusions", "never round up", "never invent"):
         assert needed in text, needed
+
+
+def test_delivery_repairs_when_an_exception_is_unhandled(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "delivery.md").write_text("DEL")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/enterprise-fit.md").write_text("E1 E2 E3")
+    replies = iter(["E1 and E3 handled", "E1 E2 E3 handled"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.delivery([str(doc)])
+    assert len(prompts) == 2 and "E2" in prompts[1] and "exceptions and fit items" in prompts[1]
+    assert (tmp_path / "briefs/delivery-approach.md").read_text() == "E1 E2 E3 handled"
+
+
+def test_delivery_feeds_in_the_fit_assessment(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "delivery.md").write_text("DEL")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/enterprise-fit.md").write_text("E1")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.delivery([str(doc)])
+    assert "enterprise-fit.md" in prompts[0]
+
+
+def test_every_checked_step_exists_in_steps():
+    assert set(agent.CHECKS) <= set(agent.STEPS)
+
+
+def test_delivery_template_covers_step_7_outputs():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "delivery.md").read_text().lower().split())
+    for needed in ("phases", "roadmap", "dependency map", "migration and transition approach", "prerequisites",
+                   "client responsibilities", "decision points", "likely delivery roles",
+                   "responsibility assumptions", "delivery risks", "one row for every exception",
+                   "do not invent dates, prices or headcounts", "t0", "estimate", "proposed", "never invent",
+                   "no phasing can meet a deadline", "notice periods"):
+        assert needed in text, needed
+
+
+def test_step_with_no_files_and_no_earlier_briefs_exits(tmp_path, monkeypatch):
+    import pytest
+    _setup(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit) as e:
+        agent.run_step("qualify", [])
+    assert "nothing to read" in str(e.value)
+
+
+def test_later_step_runs_from_earlier_briefs_alone(tmp_path, monkeypatch):
+    _, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "delivery.md").write_text("DEL")
+    (tmp_path / "briefs").mkdir()
+    for f in agent.STEPS["delivery"][3]:
+        (tmp_path / "briefs" / f).write_text("E1")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.run_step("delivery", [])  # no source files given
+    assert "enterprise-fit.md" in prompts[0]
