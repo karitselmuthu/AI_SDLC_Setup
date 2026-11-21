@@ -32,20 +32,28 @@ STEPS = {
                 ["opportunity-brief.md", "requirements.md", "current-state.md"]),
     "design": ("design.md", "target-architecture.md", "Tech lead signs off on the target architecture",
                ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md"]),
+    "fit": ("fit.md", "enterprise-fit.md", "Security, compliance and enterprise architecture reviewers assess the fit",
+            ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+             "target-architecture.md"]),
 }
 
 
-def untraced(briefs, text):
-    """Deterministic check: every requirement ID in requirements.md must appear in the design. Returns a fix-up prompt or ''."""
-    req = briefs / "requirements.md"
-    ids = sorted(set(re.findall(r"R-\d{3}", req.read_text()))) if req.exists() else []
-    missing = [i for i in ids if i not in text]
-    return (f"The requirement traceability table is missing {', '.join(missing)}. Add a row for each, mapped to "
-            "design elements or marked 'Not met' / 'Unknown' with the reason. Reply with the complete updated "
-            "document, same sections.") if missing else ""
+def must_cover(source, pattern, what):
+    """Deterministic check factory: every ID matching `pattern` in briefs/<source> must appear in the step's output.
+    Returns fn(briefs_dir, text) -> fix-up prompt, or '' when nothing is missing."""
+    def check(briefs, text):
+        src = briefs / source
+        ids = sorted(set(re.findall(pattern, src.read_text()))) if src.exists() else []
+        missing = [i for i in ids if i not in text]
+        return (f"The {what} is missing {', '.join(missing)}. Add a row for each, with a verdict or status "
+                "and the reason. Reply with the complete updated document, same sections.") if missing else ""
+    return check
 
 
-CHECKS = {"design": untraced}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+untraced = must_cover("requirements.md", r"R-\d{3}", "requirement traceability table")  # design: every requirement
+unassessed = must_cover("target-architecture.md", r"\b[KI]\d+\b", "fit assessment table")  # fit: every component/interface
+
+CHECKS = {"design": untraced, "fit": unassessed}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -78,6 +86,7 @@ def discover(files): run_step("discover", files)  # 2. requirements
 def assess(files): run_step("assess", files)      # 3. current-state view
 def options(files): run_step("options", files)    # 4. solution options + recommendation
 def design(files): run_step("design", files)      # 5. target architecture + traceability
+def fit(files): run_step("fit", files)            # 6. enterprise fit: standards, exceptions, compliance questions
 
 
 if __name__ == "__main__":

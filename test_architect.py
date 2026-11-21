@@ -165,3 +165,42 @@ def test_design_template_covers_step_5_outputs():
                    "one row for every requirement", "mermaid", "never invent", "proposed",
                    "do not name a specific vendor", "key design decisions"):
         assert needed in text, needed
+
+
+def test_must_cover_factory_is_generic(tmp_path):
+    (tmp_path / "x.md").write_text("K1 K2 I1")
+    check = agent.must_cover("x.md", r"\b[KI]\d+\b", "table")
+    assert "K2" in check(tmp_path, "K1 I1") and "K1" not in check(tmp_path, "K1 I1")
+    assert check(tmp_path, "K1 K2 I1") == ""
+
+
+def test_fit_repairs_when_a_component_is_not_assessed(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "fit.md").write_text("FIT")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/target-architecture.md").write_text("K1 K2 I1")
+    replies = iter(["K1 and I1 only", "K1 K2 I1 all assessed"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.fit([str(doc)])
+    assert len(prompts) == 2 and "K2" in prompts[1] and "fit assessment" in prompts[1]
+    assert (tmp_path / "briefs/enterprise-fit.md").read_text() == "K1 K2 I1 all assessed"
+
+
+def test_fit_feeds_in_the_design_and_client_standards(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "fit.md").write_text("FIT")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/target-architecture.md").write_text("K1")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.fit([str(doc)])
+    assert "target-architecture.md" in prompts[0] and str(doc) in prompts[0]
+
+
+def test_fit_template_covers_step_6_outputs():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "fit.md").read_text().lower().split())  # ignore line wraps
+    for needed in ("approved platforms", "security policy", "data residency", "regulatory", "accessibility",
+                   "existing contracts", "exceptions", "compliance questions", "risks", "items for human review",
+                   "one row for every design component", "commonly expected, not stated by client",
+                   "do not give legal conclusions", "never round up", "never invent"):
+        assert needed in text, needed
