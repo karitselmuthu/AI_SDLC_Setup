@@ -421,3 +421,116 @@ def test_every_section_in_the_discuss_template_is_labelled():
     headings = re.findall(r"(?m)^## (.+)$", text)
     assert len(headings) == 11
     assert [h for h in headings if "[CLIENT-SHAREABLE]" not in h and "[INTERNAL]" not in h] == []
+
+
+def test_approving_a_step_writes_the_ledger_and_a_rejection_does_not(tmp_path, monkeypatch):
+    import json
+    doc, _ = _setup(tmp_path, monkeypatch)
+    answers = iter([False, True])
+    monkeypatch.setattr(agent, "approve", lambda who: next(answers))
+    monkeypatch.setattr("builtins.input", lambda _: "tighten it")
+    agent.qualify([str(doc)])
+    lines = (tmp_path / "briefs/approvals.log").read_text().splitlines()
+    assert len(lines) == 1  # two drafts, one approval
+    rec = json.loads(lines[0])
+    assert rec["step"] == "qualify" and rec["file"] == "opportunity-brief.md" and len(rec["sha256"]) == 64
+
+
+def _approved_pipeline(tmp_path, monkeypatch):
+    """Every step's output exists and is approved, in order, as after a clean run of steps 1-10."""
+    from architect import baseline
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "handoff.md").write_text("HANDOFF")
+    briefs = tmp_path / "briefs"
+    briefs.mkdir()
+    for step, (_, out, _, _) in agent.STEPS.items():
+        if step != "handoff":
+            (briefs / out).write_text("R-001 F1 content")
+            baseline.log_approval(briefs, step, briefs / out, "reviewer")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    return doc, prompts
+
+
+def test_handoff_refuses_when_nothing_is_approved(tmp_path, monkeypatch):
+    import pytest
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "handoff.md").write_text("HANDOFF")
+    with pytest.raises(SystemExit) as e:
+        agent.handoff([])
+    assert "Cannot hand off yet" in str(e.value) and "not produced" in str(e.value)
+    assert prompts == []  # the model is never called on unapproved material
+
+
+def test_handoff_refuses_when_an_artifact_was_edited_after_approval(tmp_path, monkeypatch):
+    import pytest
+    doc, prompts = _approved_pipeline(tmp_path, monkeypatch)
+    (tmp_path / "briefs/requirements.md").write_text("R-001 edited behind the reviewer's back")
+    with pytest.raises(SystemExit) as e:
+        agent.handoff([])
+    assert "requirements.md: edited after it was approved" in str(e.value) and prompts == []
+
+
+def test_handoff_refuses_when_an_earlier_step_was_rerun_and_approved_later(tmp_path, monkeypatch):
+    import pytest
+    from architect import baseline
+    doc, prompts = _approved_pipeline(tmp_path, monkeypatch)
+    (tmp_path / "briefs/requirements.md").write_text("R-001 revised after the meeting")
+    baseline.log_approval(tmp_path / "briefs", "discover", tmp_path / "briefs/requirements.md", "reviewer")
+    with pytest.raises(SystemExit) as e:
+        agent.handoff([])
+    msg = str(e.value)
+    assert "current-state.md: stale, requirements.md was re-approved" in msg and "re-run `assess`" in msg
+
+
+def test_handoff_publishes_v1_then_v2_with_the_previous_baseline_fed_in(tmp_path, monkeypatch):
+    import json
+    doc, prompts = _approved_pipeline(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or "baseline text covering R-001 and F1")
+    agent.handoff([str(doc)])
+    v1 = tmp_path / "baseline/v1"
+    assert (v1 / "solution-baseline.md").read_text() == "baseline text covering R-001 and F1"
+    assert json.loads((v1 / "manifest.json").read_text())["version"] == 1
+    assert "version v1" in prompts[0] and "previous baseline" not in prompts[0]
+    # the handoff itself was approved, so the second run is consistent and publishes v2
+    agent.handoff([str(doc)])
+    assert (tmp_path / "baseline/v2/manifest.json").exists()
+    assert "version v2" in prompts[1] and "previous baseline is solution-baseline.md in v1" in prompts[1]
+    assert str(tmp_path / "baseline/v1/solution-baseline.md") in prompts[1]
+
+
+def test_handoff_repairs_a_missing_requirement_or_follow_up(tmp_path, monkeypatch):
+    doc, prompts = _approved_pipeline(tmp_path, monkeypatch)
+    (tmp_path / "briefs/requirements.md").write_text("R-001 R-002")
+    (tmp_path / "briefs/opportunity-record.md").write_text("F1 F2")
+    from architect import baseline
+    for step, f in (("discover", "requirements.md"), ("record", "opportunity-record.md")):
+        baseline.log_approval(tmp_path / "briefs", step, tmp_path / "briefs" / f, "reviewer")
+    # re-approve the dependants in order so the set is consistent again
+    for step, (_, out, _, _) in agent.STEPS.items():
+        if step not in ("handoff", "qualify", "discover", "record"):
+            baseline.log_approval(tmp_path / "briefs", step, tmp_path / "briefs" / out, "reviewer")
+    baseline.log_approval(tmp_path / "briefs", "record", tmp_path / "briefs/opportunity-record.md", "reviewer")
+    replies = iter(["covers R-001 and F1 only", "covers R-001 R-002 F1 F2"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    agent.handoff([])
+    assert len(prompts) == 2 and "R-002" in prompts[1] and "F2" in prompts[1]
+    assert (tmp_path / "baseline/v1/solution-baseline.md").read_text() == "covers R-001 R-002 F1 F2"
+
+
+def test_handoff_template_enforces_firm_vs_soft_and_known_deltas():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "handoff.md").read_text().lower().split())
+    for needed in ("never invent or change a requirement", "keep ids unchanged", "explicit in the opportunity record",
+                   "verbal-unconfirmed", "known deltas", "does not build from outdated content",
+                   "estimates stay estimates", "internal-only commercial material", "baseline identity",
+                   "reading guide", "requirements baseline", "architecture baseline", "assumptions register",
+                   "dependencies", "risks", "client commitments and follow-ups", "validation checklist",
+                   "change control", "traceability index", "one row for every requirement id",
+                   "one row for every follow-up id", "what changed since the previous version"):
+        assert needed in text, needed
+
+
+def test_handoff_row_reads_every_other_output_and_is_the_last_step():
+    names = list(agent.STEPS)
+    assert names[-1] == "handoff"
+    others = {o for k, (_, o, _, _) in agent.STEPS.items() if k != "handoff"}
+    assert set(agent.STEPS["handoff"][3]) == others

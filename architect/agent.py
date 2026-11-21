@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a scr
 
 import core  # noqa: E402
 from core import approve, ask  # noqa: E402
+from architect import baseline  # noqa: E402
 
 core.AGENTS["architect"] = dict(
     role="You are the Architect Agent. Draft the spec, map dependencies, qualify opportunities, "
@@ -51,6 +52,10 @@ STEPS = {
     "record": ("record.md", "opportunity-record.md", "Bid manager confirms the record of decisions and follow-ups",
                ["opportunity-brief.md", "requirements.md", "delivery-approach.md", "proposal-package.md",
                 "discussion-pack.md"]),
+    "handoff": ("handoff.md", "solution-baseline.md", "Delivery lead and bid manager approve the baseline for handoff",
+                ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+                 "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md",
+                 "proposal-package.md", "discussion-pack.md", "opportunity-record.md"]),
 }
 
 ACCUMULATE = {"record"}  # these steps build on their own previous output (a running log) instead of starting over
@@ -81,17 +86,36 @@ unanswered = must_cover("requirements.md", r"R-\d{3}", "response to RFP requirem
 undiscussed = must_cover("delivery-approach.md", r"\bD\d+\b", "decisions we need table")  # discuss: every decision point
 unlogged = must_cover("discussion-pack.md", r"\bD\d+\b", "decision log")  # record: an outcome for every decision point
 
+def all_of(*checks):
+    """Combine checks: one fix-up prompt listing everything that is missing."""
+    return lambda briefs, text: "\n".join(filter(None, (c(briefs, text) for c in checks)))
+
+
+unindexed = must_cover("requirements.md", r"R-\d{3}", "traceability index")  # handoff: every requirement
+unfollowed = must_cover("opportunity-record.md", r"\bF\d+\b", "client commitments and follow-ups table")  # every follow-up
+
 CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled, "economics": unestimated,
-          "proposal": unanswered, "discuss": undiscussed, "record": unlogged}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+          "proposal": unanswered, "discuss": undiscussed, "record": unlogged,
+          "handoff": all_of(unindexed, unfollowed)}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
     """Template + earlier outputs + source docs -> markdown in briefs/, looped until a human approves."""
     template, out_name, reviewer, prior = STEPS[name]
     briefs = HERE / "briefs"
+    extra, others = "", {k: v for k, v in STEPS.items() if k != "handoff"}
+    if name == "handoff":  # only approved, unedited, consistent artifacts can be baselined
+        bad = baseline.problems(briefs, others)
+        if bad:
+            sys.exit("Cannot hand off yet. Fix these first:\n  " + "\n  ".join(bad))
+        version = baseline.next_version(HERE / "baseline")
+        extra = f"\n\nThis baseline will be published as version v{version}."
     docs = [briefs / p for p in prior if (briefs / p).exists()] + [pathlib.Path(f).resolve() for f in files]
     if name in ACCUMULATE and (briefs / out_name).exists():
         docs.insert(0, briefs / out_name)  # previous version: carry its decisions and follow-ups forward
+    if name == "handoff" and (old := baseline.previous_doc(HERE / "baseline", version, out_name)):
+        docs.insert(0, old)  # previous baseline, for the "what changed" section
+        extra += f" The previous baseline is {old.name} in {old.parent.name}."
     if not docs:
         sys.exit(f"{name}: nothing to read. Pass source files, or run the earlier steps first.")
     missing = [str(d) for d in docs if not d.is_file()]
@@ -102,16 +126,20 @@ def run_step(name, files):
     out.parent.mkdir(exist_ok=True)
     note = ""
     while True:
-        text = ask("architect", (HERE / template).read_text()
+        text = ask("architect", (HERE / template).read_text() + extra
                    + "\n\nSource documents (open each with the Read tool):\n" + "\n".join(map(str, docs)) + note)
         gap = CHECKS.get(name, lambda *_: "")(briefs, text)
         if gap:  # one automatic repair pass; the human reviewer still sees whatever comes out
             text = ask("architect", gap)
         out.write_text(text)
         if approve(reviewer):
+            baseline.log_approval(briefs, name, out, reviewer)  # the ledger step 11 relies on
             break
         note = "\n\nHuman feedback: " + input("feedback> ")
     print("wrote:", out)
+    if name == "handoff":
+        print("baseline:", baseline.package(briefs, HERE / "baseline", others, out_name, version,
+                                            [pathlib.Path(f).resolve() for f in files]))
 
 
 def qualify(files): run_step("qualify", files)    # 1. opportunity brief
@@ -125,6 +153,7 @@ def economics(files): run_step("economics", files)  # 8. ROM: effort ranges, cos
 def proposal(files): run_step("proposal", files)    # 9. proposal package, claims evidenced or marked [CONFIRM]
 def discuss(files): run_step("discuss", files)      # 10a. meeting pack: flow, questions, walkthrough, objections
 def record(files): run_step("record", files)        # 10b. decisions, changes and follow-ups after the meeting
+def handoff(files): run_step("handoff", files)      # 11. versioned solution baseline for the delivery team
 
 
 if __name__ == "__main__":
