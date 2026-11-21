@@ -12,6 +12,7 @@ def test_qualify_writes_brief(tmp_path, monkeypatch):
     rfp.write_text("Build a portal. Due 1 May.")
     seen = {}
     monkeypatch.setattr(agent, "HERE", tmp_path)
+    monkeypatch.setattr(agent, "PROMPTS", tmp_path)
     (tmp_path / "qualify.md").write_text("TEMPLATE")
     monkeypatch.setattr(agent, "ask", lambda a, p: seen.update(agent=a, prompt=p) or "## Business problem")
     monkeypatch.setattr(agent, "approve", lambda who: True)
@@ -29,6 +30,7 @@ def test_discover_includes_opportunity_brief(tmp_path, monkeypatch):
     (tmp_path / "discover.md").write_text("DISCOVER")
     seen = {}
     monkeypatch.setattr(agent, "HERE", tmp_path)
+    monkeypatch.setattr(agent, "PROMPTS", tmp_path)
     monkeypatch.setattr(agent, "ask", lambda a, p: seen.update(prompt=p) or "| R-001 |")
     monkeypatch.setattr(agent, "approve", lambda who: True)
     agent.discover([str(notes)])
@@ -43,6 +45,7 @@ def _setup(tmp_path, monkeypatch, replies=None):
     doc.write_text("x")
     prompts = []
     monkeypatch.setattr(agent, "HERE", tmp_path)
+    monkeypatch.setattr(agent, "PROMPTS", tmp_path)
     monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or "out")
     return doc, prompts
 
@@ -73,7 +76,7 @@ def test_discover_without_brief_reads_only_given_docs(tmp_path, monkeypatch):
 
 
 def test_real_templates_forbid_invention_and_demand_sources():
-    real = pathlib.Path(agent.__file__).parent
+    real = agent.PROMPTS
     for t in ("qualify.md", "discover.md"):
         text = (real / t).read_text().lower()
         assert "never invent" in text and ("not stated" in text or "proposed" in text)
@@ -83,7 +86,7 @@ def test_every_step_has_template_and_ordered_inputs():
     """Guards the 11-step table: templates exist, and each step only reads outputs earlier steps produce."""
     produced = set()
     for name, (template, out, reviewer, prior) in agent.STEPS.items():
-        assert (pathlib.Path(agent.__file__).parent / template).is_file(), name
+        assert (agent.PROMPTS / template).is_file(), name
         assert set(prior) <= produced, f"{name} reads an output no earlier step makes"
         assert out not in produced and reviewer
         produced.add(out)
@@ -103,7 +106,7 @@ def test_assess_feeds_in_earlier_briefs_and_env_docs(tmp_path, monkeypatch):
 
 
 def test_assess_template_covers_the_step_3_outputs():
-    text = (pathlib.Path(agent.__file__).parent / "assess.md").read_text()
+    text = (agent.PROMPTS / "assess.md").read_text()
     for needed in ("Current systems", "Interfaces", "Data flows", "Hosting", "Identity", "pain points",
                    "Dependencies", "Gaps", "client confirmation", "mermaid", "never invent"):
         assert needed.lower() in text.lower(), needed
@@ -122,7 +125,7 @@ def test_options_feeds_in_all_three_earlier_briefs(tmp_path, monkeypatch):
 
 
 def test_options_template_enforces_comparison_and_honesty():
-    text = (pathlib.Path(agent.__file__).parent / "options.md").read_text().lower()
+    text = (agent.PROMPTS / "options.md").read_text().lower()
     for needed in ("fit", "risk", "cost drivers", "complexity", "time to deliver", "recommendation",
                    "assumptions register", "trade-offs", "never invent", "do not invent prices",
                    "not met", "change freeze", "what would change the recommendation"):
@@ -159,7 +162,7 @@ def test_other_steps_have_no_repair_pass(tmp_path, monkeypatch):
 
 
 def test_design_template_covers_step_5_outputs():
-    text = (pathlib.Path(agent.__file__).parent / "design.md").read_text().lower()
+    text = (agent.PROMPTS / "design.md").read_text().lower()
     for needed in ("components", "boundaries", "interfaces", "data flows", "identity", "security controls",
                    "resilience", "observability", "deployment model", "requirement traceability",
                    "one row for every requirement", "mermaid", "never invent", "proposed",
@@ -198,7 +201,7 @@ def test_fit_feeds_in_the_design_and_client_standards(tmp_path, monkeypatch):
 
 
 def test_fit_template_covers_step_6_outputs():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "fit.md").read_text().lower().split())  # ignore line wraps
+    text = " ".join((agent.PROMPTS / "fit.md").read_text().lower().split())  # ignore line wraps
     for needed in ("approved platforms", "security policy", "data residency", "regulatory", "accessibility",
                    "existing contracts", "exceptions", "compliance questions", "risks", "items for human review",
                    "one row for every design component", "commonly expected, not stated by client",
@@ -234,7 +237,7 @@ def test_every_checked_step_exists_in_steps():
 
 
 def test_delivery_template_covers_step_7_outputs():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "delivery.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "delivery.md").read_text().lower().split())
     for needed in ("phases", "roadmap", "dependency map", "migration and transition approach", "prerequisites",
                    "client responsibilities", "decision points", "likely delivery roles",
                    "responsibility assumptions", "delivery risks", "one row for every exception",
@@ -286,7 +289,7 @@ def test_economics_feeds_in_the_delivery_approach_and_commercial_docs(tmp_path, 
 
 
 def test_economics_template_separates_confirmed_from_estimates():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "economics.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "economics.md").read_text().lower().split())
     for needed in ("rom, not a quote", "confirmed =", "calculated =", "estimate =", "not stated =",
                    "never invent prices, rates, volumes or headcounts", "do not convert between currencies",
                    "expired, indicative, or not a quote is not confirmed", "high >= likely >= low",
@@ -297,7 +300,7 @@ def test_economics_template_separates_confirmed_from_estimates():
 
 
 def test_sample_commercial_inputs_contain_the_traps():
-    s = (pathlib.Path(agent.__file__).parent / "samples/commercial-inputs.md").read_text()
+    s = (agent.PROMPTS / "samples/commercial-inputs.md").read_text()
     assert "valid until 31 August 2026" in s and "GBP" in s and "USD" in s and "not a quote" in s
 
 
@@ -325,7 +328,7 @@ def test_proposal_feeds_in_the_rom_and_bidder_documents(tmp_path, monkeypatch):
 
 
 def test_proposal_template_enforces_evidence_honesty_and_no_leaks():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "proposal.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "proposal.md").read_text().lower().split())
     for needed in ("[confirm", "evidenced", "never invent credentials", "do not claim a certification",
                    "reference whose approval is pending", "unsupported superlatives",
                    "must never be answered \"full\"", "internal rate card", "[confirm: pricing approval]",
@@ -336,12 +339,12 @@ def test_proposal_template_enforces_evidence_honesty_and_no_leaks():
 
 
 def test_proposal_reviewer_summary_comes_first():
-    text = (pathlib.Path(agent.__file__).parent / "proposal.md").read_text()
+    text = (agent.PROMPTS / "proposal.md").read_text()
     assert text.index("## Reviewer summary") < text.index("## 1. Executive summary") < text.index("## Evidence register")
 
 
 def test_bidder_profile_sample_contains_the_traps():
-    s = (pathlib.Path(agent.__file__).parent / "samples/bidder-profile.md").read_text()
+    s = (agent.PROMPTS / "samples/bidder-profile.md").read_text()
     assert "SOC 2 Type II: not held" in s and "approval pending" in s and "no supporting evidence" in s
 
 
@@ -391,7 +394,7 @@ def test_other_steps_do_not_read_their_previous_output(tmp_path, monkeypatch):
 
 
 def test_discuss_template_labels_sections_and_blocks_leaks():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "discuss.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "discuss.md").read_text().lower().split())
     for needed in ("[client-shareable]", "[internal]", "internal rate card", "rom figures", "pending references",
                    "never invent", "[confirm", "bluffing", "never promise what the analysis says cannot be met",
                    "presentation flow", "discovery questions", "architecture walkthrough", "option comparison",
@@ -401,7 +404,7 @@ def test_discuss_template_labels_sections_and_blocks_leaks():
 
 
 def test_record_template_distinguishes_firmness_and_never_rewrites_briefs():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "record.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "record.md").read_text().lower().split())
     for needed in ("explicit", "implied", "verbal-unconfirmed", "never treated as confirmed",
                    "do not silently rewrite the earlier briefs", "re-run", "one row for every decision point",
                    "follow-ups", "owner", "decision history", "impact on earlier artifacts",
@@ -410,14 +413,14 @@ def test_record_template_distinguishes_firmness_and_never_rewrites_briefs():
 
 
 def test_meeting_notes_sample_contains_the_traps():
-    s = (pathlib.Path(agent.__file__).parent / "samples/client-meeting-notes.md").read_text()
+    s = (agent.PROMPTS / "samples/client-meeting-notes.md").read_text()
     assert "Not confirmed by Finance" in s and "No date given" in s and "nobody in the room knew" in s
     assert "stretch goal" in s and "No decision" in s
 
 
 def test_every_section_in_the_discuss_template_is_labelled():
     import re
-    text = (pathlib.Path(agent.__file__).parent / "discuss.md").read_text()
+    text = (agent.PROMPTS / "discuss.md").read_text()
     headings = re.findall(r"(?m)^## (.+)$", text)
     assert len(headings) == 11
     assert [h for h in headings if "[CLIENT-SHAREABLE]" not in h and "[INTERNAL]" not in h] == []
@@ -518,7 +521,7 @@ def test_handoff_repairs_a_missing_requirement_or_follow_up(tmp_path, monkeypatc
 
 
 def test_handoff_template_enforces_firm_vs_soft_and_known_deltas():
-    text = " ".join((pathlib.Path(agent.__file__).parent / "handoff.md").read_text().lower().split())
+    text = " ".join((agent.PROMPTS / "handoff.md").read_text().lower().split())
     for needed in ("never invent or change a requirement", "keep ids unchanged", "explicit in the opportunity record",
                    "verbal-unconfirmed", "known deltas", "does not build from outdated content",
                    "estimates stay estimates", "internal-only commercial material", "baseline identity",

@@ -9,7 +9,8 @@ import pathlib
 import re
 import sys
 
-HERE = pathlib.Path(__file__).resolve().parent
+HERE = pathlib.Path(__file__).resolve().parent  # code, and where outputs go: briefs/ and baseline/
+PROMPTS = HERE.parent / "docs" / "architect"  # the prompt template for each step, and samples/
 sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a script
 
 import core  # noqa: E402
@@ -126,7 +127,7 @@ def run_step(name, files):
     out.parent.mkdir(exist_ok=True)
     note = ""
     while True:
-        text = ask("architect", (HERE / template).read_text() + extra
+        text = ask("architect", (PROMPTS / template).read_text() + extra
                    + "\n\nSource documents (open each with the Read tool):\n" + "\n".join(map(str, docs)) + note)
         gap = CHECKS.get(name, lambda *_: "")(briefs, text)
         if gap:  # one automatic repair pass; the human reviewer still sees whatever comes out
