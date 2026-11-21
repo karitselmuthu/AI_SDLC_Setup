@@ -6,6 +6,7 @@ Each step reads earlier steps' outputs from briefs/ automatically and writes its
 Steps: see STEPS below.
 """
 import pathlib
+import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -29,7 +30,22 @@ STEPS = {
                ["opportunity-brief.md", "requirements.md"]),
     "options": ("options.md", "solution-options.md", "Tech lead and pursuit lead review the options and recommendation",
                 ["opportunity-brief.md", "requirements.md", "current-state.md"]),
+    "design": ("design.md", "target-architecture.md", "Tech lead signs off on the target architecture",
+               ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md"]),
 }
+
+
+def untraced(briefs, text):
+    """Deterministic check: every requirement ID in requirements.md must appear in the design. Returns a fix-up prompt or ''."""
+    req = briefs / "requirements.md"
+    ids = sorted(set(re.findall(r"R-\d{3}", req.read_text()))) if req.exists() else []
+    missing = [i for i in ids if i not in text]
+    return (f"The requirement traceability table is missing {', '.join(missing)}. Add a row for each, mapped to "
+            "design elements or marked 'Not met' / 'Unknown' with the reason. Reply with the complete updated "
+            "document, same sections.") if missing else ""
+
+
+CHECKS = {"design": untraced}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -47,6 +63,9 @@ def run_step(name, files):
     while True:
         text = ask("architect", (HERE / template).read_text()
                    + "\n\nSource documents (open each with the Read tool):\n" + "\n".join(map(str, docs)) + note)
+        gap = CHECKS.get(name, lambda *_: "")(briefs, text)
+        if gap:  # one automatic repair pass; the human reviewer still sees whatever comes out
+            text = ask("architect", gap)
         out.write_text(text)
         if approve(reviewer):
             break
@@ -58,6 +77,7 @@ def qualify(files): run_step("qualify", files)    # 1. opportunity brief
 def discover(files): run_step("discover", files)  # 2. requirements
 def assess(files): run_step("assess", files)      # 3. current-state view
 def options(files): run_step("options", files)    # 4. solution options + recommendation
+def design(files): run_step("design", files)      # 5. target architecture + traceability
 
 
 if __name__ == "__main__":

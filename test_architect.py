@@ -127,3 +127,41 @@ def test_options_template_enforces_comparison_and_honesty():
                    "assumptions register", "trade-offs", "never invent", "do not invent prices",
                    "not met", "change freeze", "what would change the recommendation"):
         assert needed in text, needed
+
+
+def test_untraced_finds_requirement_ids_missing_from_design(tmp_path):
+    (tmp_path / "requirements.md").write_text("| R-001 | a |\n| R-002 | b |\n| R-003 | c |")
+    assert agent.untraced(tmp_path, "R-001 and R-003 mapped") .count("R-002") == 1
+    assert agent.untraced(tmp_path, "R-001 R-002 R-003") == ""
+    assert agent.untraced(tmp_path / "nowhere", "anything") == ""  # no requirements file -> nothing to check
+
+
+def test_design_repairs_missing_traceability_once(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "design.md").write_text("DES")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/requirements.md").write_text("R-001 R-002")
+    replies = iter(["covers R-001 only", "covers R-001 and R-002"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.design([str(doc)])
+    assert len(prompts) == 2 and "R-002" in prompts[1]
+    assert (tmp_path / "briefs/target-architecture.md").read_text() == "covers R-001 and R-002"
+
+
+def test_other_steps_have_no_repair_pass(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/requirements.md").write_text("R-001 R-002")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.qualify([str(doc)])
+    assert len(prompts) == 1
+
+
+def test_design_template_covers_step_5_outputs():
+    text = (pathlib.Path(agent.__file__).parent / "design.md").read_text().lower()
+    for needed in ("components", "boundaries", "interfaces", "data flows", "identity", "security controls",
+                   "resilience", "observability", "deployment model", "requirement traceability",
+                   "one row for every requirement", "mermaid", "never invent", "proposed",
+                   "do not name a specific vendor", "key design decisions"):
+        assert needed in text, needed
