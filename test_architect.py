@@ -77,3 +77,33 @@ def test_real_templates_forbid_invention_and_demand_sources():
     for t in ("qualify.md", "discover.md"):
         text = (real / t).read_text().lower()
         assert "never invent" in text and ("not stated" in text or "proposed" in text)
+
+
+def test_every_step_has_template_and_ordered_inputs():
+    """Guards the 11-step table: templates exist, and each step only reads outputs earlier steps produce."""
+    produced = set()
+    for name, (template, out, reviewer, prior) in agent.STEPS.items():
+        assert (pathlib.Path(agent.__file__).parent / template).is_file(), name
+        assert set(prior) <= produced, f"{name} reads an output no earlier step makes"
+        assert out not in produced and reviewer
+        produced.add(out)
+
+
+def test_assess_feeds_in_earlier_briefs_and_env_docs(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "assess.md").write_text("A")
+    (tmp_path / "briefs").mkdir()
+    for f in ("opportunity-brief.md", "requirements.md"):
+        (tmp_path / "briefs" / f).write_text("x")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.assess([str(doc)])
+    p = prompts[0]
+    assert "opportunity-brief.md" in p and "requirements.md" in p and str(doc) in p
+    assert (tmp_path / "briefs/current-state.md").read_text() == "out"
+
+
+def test_assess_template_covers_the_step_3_outputs():
+    text = (pathlib.Path(agent.__file__).parent / "assess.md").read_text()
+    for needed in ("Current systems", "Interfaces", "Data flows", "Hosting", "Identity", "pain points",
+                   "Dependencies", "Gaps", "client confirmation", "mermaid", "never invent"):
+        assert needed.lower() in text.lower(), needed

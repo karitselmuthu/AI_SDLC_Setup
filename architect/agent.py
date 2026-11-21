@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Architect agent. Owns everything architect-related; sdlc.py just uses it for its design stage.
 
-Usage: python architect/agent.py qualify  rfp.pdf notes.md ...   -> briefs/opportunity-brief.md
-       python architect/agent.py discover rfp.pdf notes.md ...   -> briefs/requirements.md
-         (discover also reads briefs/opportunity-brief.md if qualify has run)
+Usage: python architect/agent.py <step> FILE...      (FILEs: RFPs, notes, diagrams, inventories, standards)
+Each step reads earlier steps' outputs from briefs/ automatically and writes its own there.
+Steps: see STEPS below.
 """
 import pathlib
 import sys
@@ -16,19 +16,30 @@ from core import approve, ask  # noqa: E402
 
 core.AGENTS["architect"] = dict(
     role="You are the Architect Agent. Draft the spec, map dependencies, qualify opportunities, "
-         "discover requirements. Never write code.",
-    tools=core.RO,  # read-only: no edit, write or shell
+         "discover requirements, assess environments. Never write code.",
+    tools=core.RO,  # read-only: no edit, write or shell. Read also opens PDFs and images (diagrams).
 )
 
+# step -> (prompt template, output file in briefs/, human reviewer, earlier outputs to feed in). Add a row per step.
+STEPS = {
+    "qualify": ("qualify.md", "opportunity-brief.md", "Pursuit lead reviews the opportunity brief", []),
+    "discover": ("discover.md", "requirements.md", "Product owner approves the requirements",
+                 ["opportunity-brief.md"]),
+    "assess": ("assess.md", "current-state.md", "Tech lead confirms the current-state view",
+               ["opportunity-brief.md", "requirements.md"]),
+}
 
-def _task(template, files, out_name, reviewer):
-    """Prompt template + source docs -> markdown in briefs/, looped until a human approves."""
-    docs = [pathlib.Path(f).resolve() for f in files]
+
+def run_step(name, files):
+    """Template + earlier outputs + source docs -> markdown in briefs/, looped until a human approves."""
+    template, out_name, reviewer, prior = STEPS[name]
+    briefs = HERE / "briefs"
+    docs = [briefs / p for p in prior if (briefs / p).exists()] + [pathlib.Path(f).resolve() for f in files]
     missing = [str(d) for d in docs if not d.is_file()]
     if missing:
         sys.exit(f"not found: {missing}")
     core.EXTRA_DIRS.extend({str(d.parent) for d in docs})
-    out = HERE / "briefs" / out_name
+    out = briefs / out_name
     out.parent.mkdir(exist_ok=True)
     note = ""
     while True:
@@ -41,21 +52,13 @@ def _task(template, files, out_name, reviewer):
     print("wrote:", out)
 
 
-def qualify(files):
-    """Step 1: RFP / questionnaire / notes / account brief -> opportunity brief."""
-    _task("qualify.md", files, "opportunity-brief.md", "Pursuit lead reviews the opportunity brief")
-
-
-def discover(files):
-    """Step 2: documents (+ the opportunity brief, if any) -> prioritized, traceable requirements."""
-    brief = HERE / "briefs" / "opportunity-brief.md"
-    _task("discover.md", ([str(brief)] if brief.exists() else []) + list(files), "requirements.md",
-          "Product owner approves the requirements")
+def qualify(files): run_step("qualify", files)    # 1. opportunity brief
+def discover(files): run_step("discover", files)  # 2. requirements
+def assess(files): run_step("assess", files)      # 3. current-state view
 
 
 if __name__ == "__main__":
-    steps = {"qualify": qualify, "discover": discover}
     cmd, *files = sys.argv[1:] or [""]
-    if cmd not in steps or not files:
-        sys.exit(__doc__)
-    steps[cmd](files)
+    if cmd not in STEPS or not files:
+        sys.exit(__doc__ + "Steps: " + ", ".join(STEPS))
+    run_step(cmd, files)
