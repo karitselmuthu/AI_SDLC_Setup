@@ -44,7 +44,16 @@ STEPS = {
     "proposal": ("proposal.md", "proposal-package.md", "Bid manager, delivery lead and pursuit lead review the proposal before release",
                  ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                   "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md"]),
+    "discuss": ("discuss.md", "discussion-pack.md", "Bid manager and pursuit lead approve the meeting pack",
+                ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+                 "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md",
+                 "proposal-package.md"]),
+    "record": ("record.md", "opportunity-record.md", "Bid manager confirms the record of decisions and follow-ups",
+               ["opportunity-brief.md", "requirements.md", "delivery-approach.md", "proposal-package.md",
+                "discussion-pack.md"]),
 }
+
+ACCUMULATE = {"record"}  # these steps build on their own previous output (a running log) instead of starting over
 
 
 def must_cover(source, pattern, what):
@@ -69,8 +78,11 @@ unestimated = must_cover("delivery-approach.md", r"\bP\d+\b", "effort estimate t
 
 unanswered = must_cover("requirements.md", r"R-\d{3}", "response to RFP requirements table")  # proposal: every requirement
 
+undiscussed = must_cover("delivery-approach.md", r"\bD\d+\b", "decisions we need table")  # discuss: every decision point
+unlogged = must_cover("discussion-pack.md", r"\bD\d+\b", "decision log")  # record: an outcome for every decision point
+
 CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled, "economics": unestimated,
-          "proposal": unanswered}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+          "proposal": unanswered, "discuss": undiscussed, "record": unlogged}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -78,6 +90,8 @@ def run_step(name, files):
     template, out_name, reviewer, prior = STEPS[name]
     briefs = HERE / "briefs"
     docs = [briefs / p for p in prior if (briefs / p).exists()] + [pathlib.Path(f).resolve() for f in files]
+    if name in ACCUMULATE and (briefs / out_name).exists():
+        docs.insert(0, briefs / out_name)  # previous version: carry its decisions and follow-ups forward
     if not docs:
         sys.exit(f"{name}: nothing to read. Pass source files, or run the earlier steps first.")
     missing = [str(d) for d in docs if not d.is_file()]
@@ -109,6 +123,8 @@ def fit(files): run_step("fit", files)            # 6. enterprise fit: standards
 def delivery(files): run_step("delivery", files)  # 7. phases, dependencies, migration, roles, risks
 def economics(files): run_step("economics", files)  # 8. ROM: effort ranges, cost drivers, savings, validation needs
 def proposal(files): run_step("proposal", files)    # 9. proposal package, claims evidenced or marked [CONFIRM]
+def discuss(files): run_step("discuss", files)      # 10a. meeting pack: flow, questions, walkthrough, objections
+def record(files): run_step("record", files)        # 10b. decisions, changes and follow-ups after the meeting
 
 
 if __name__ == "__main__":

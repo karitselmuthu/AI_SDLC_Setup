@@ -343,3 +343,81 @@ def test_proposal_reviewer_summary_comes_first():
 def test_bidder_profile_sample_contains_the_traps():
     s = (pathlib.Path(agent.__file__).parent / "samples/bidder-profile.md").read_text()
     assert "SOC 2 Type II: not held" in s and "approval pending" in s and "no supporting evidence" in s
+
+
+def test_discuss_repairs_when_a_decision_point_is_missing(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "discuss.md").write_text("DISC")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/delivery-approach.md").write_text("D1 D2 D3")
+    replies = iter(["D1 D3 covered", "D1 D2 D3 covered"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.discuss([str(doc)])
+    assert len(prompts) == 2 and "D2" in prompts[1] and "decisions we need" in prompts[1]
+    assert (tmp_path / "briefs/discussion-pack.md").read_text() == "D1 D2 D3 covered"
+
+
+def test_record_repairs_when_a_decision_point_has_no_outcome(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "record.md").write_text("REC")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/discussion-pack.md").write_text("D1 D2")
+    replies = iter(["D1 decided", "D1 decided, D2 deferred"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.record([str(doc)])
+    assert len(prompts) == 2 and "D2" in prompts[1] and "decision log" in prompts[1]
+    assert (tmp_path / "briefs/opportunity-record.md").read_text() == "D1 decided, D2 deferred"
+
+
+def test_record_carries_forward_its_previous_version(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "record.md").write_text("REC")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/opportunity-record.md").write_text("meeting 1: M1 decided")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.record([str(doc)])
+    assert "opportunity-record.md" in prompts[0]  # previous record is read first, so decisions accumulate
+
+
+def test_other_steps_do_not_read_their_previous_output(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/opportunity-brief.md").write_text("old")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.qualify([str(doc)])
+    assert "opportunity-brief.md" not in prompts[0]
+
+
+def test_discuss_template_labels_sections_and_blocks_leaks():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "discuss.md").read_text().lower().split())
+    for needed in ("[client-shareable]", "[internal]", "internal rate card", "rom figures", "pending references",
+                   "never invent", "[confirm", "bluffing", "never promise what the analysis says cannot be met",
+                   "presentation flow", "discovery questions", "architecture walkthrough", "option comparison",
+                   "anticipated objections", "one row for every decision point", "capture plan",
+                   "pre-meeting checklist", "sensitive topics"):
+        assert needed in text, needed
+
+
+def test_record_template_distinguishes_firmness_and_never_rewrites_briefs():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "record.md").read_text().lower().split())
+    for needed in ("explicit", "implied", "verbal-unconfirmed", "never treated as confirmed",
+                   "do not silently rewrite the earlier briefs", "re-run", "one row for every decision point",
+                   "follow-ups", "owner", "decision history", "impact on earlier artifacts",
+                   "carry forward every decision", "never invent"):
+        assert needed in text, needed
+
+
+def test_meeting_notes_sample_contains_the_traps():
+    s = (pathlib.Path(agent.__file__).parent / "samples/client-meeting-notes.md").read_text()
+    assert "Not confirmed by Finance" in s and "No date given" in s and "nobody in the room knew" in s
+    assert "stretch goal" in s and "No decision" in s
+
+
+def test_every_section_in_the_discuss_template_is_labelled():
+    import re
+    text = (pathlib.Path(agent.__file__).parent / "discuss.md").read_text()
+    headings = re.findall(r"(?m)^## (.+)$", text)
+    assert len(headings) == 11
+    assert [h for h in headings if "[CLIENT-SHAREABLE]" not in h and "[INTERNAL]" not in h] == []
