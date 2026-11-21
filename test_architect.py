@@ -299,3 +299,47 @@ def test_economics_template_separates_confirmed_from_estimates():
 def test_sample_commercial_inputs_contain_the_traps():
     s = (pathlib.Path(agent.__file__).parent / "samples/commercial-inputs.md").read_text()
     assert "valid until 31 August 2026" in s and "GBP" in s and "USD" in s and "not a quote" in s
+
+
+def test_proposal_repairs_when_a_requirement_has_no_response(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "proposal.md").write_text("PROP")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/requirements.md").write_text("R-001 R-002 R-003")
+    replies = iter(["R-001 R-003 answered", "R-001 R-002 R-003 answered"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.proposal([str(doc)])
+    assert len(prompts) == 2 and "R-002" in prompts[1] and "response to RFP requirements" in prompts[1]
+    assert (tmp_path / "briefs/proposal-package.md").read_text() == "R-001 R-002 R-003 answered"
+
+
+def test_proposal_feeds_in_the_rom_and_bidder_documents(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "proposal.md").write_text("PROP")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/rom-estimate.md").write_text("x")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.proposal([str(doc)])
+    assert "rom-estimate.md" in prompts[0] and str(doc) in prompts[0]
+
+
+def test_proposal_template_enforces_evidence_honesty_and_no_leaks():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "proposal.md").read_text().lower().split())
+    for needed in ("[confirm", "evidenced", "never invent credentials", "do not claim a certification",
+                   "reference whose approval is pending", "unsupported superlatives",
+                   "must never be answered \"full\"", "internal rate card", "[confirm: pricing approval]",
+                   "rom estimates are internal", "reviewer summary (internal, remove before sending)",
+                   "one row for every requirement id", "evidence register", "evaluation criteria",
+                   "executive summary", "solution narrative", "differentiators", "mermaid"):
+        assert needed in text, needed
+
+
+def test_proposal_reviewer_summary_comes_first():
+    text = (pathlib.Path(agent.__file__).parent / "proposal.md").read_text()
+    assert text.index("## Reviewer summary") < text.index("## 1. Executive summary") < text.index("## Evidence register")
+
+
+def test_bidder_profile_sample_contains_the_traps():
+    s = (pathlib.Path(agent.__file__).parent / "samples/bidder-profile.md").read_text()
+    assert "SOC 2 Type II: not held" in s and "approval pending" in s and "no supporting evidence" in s

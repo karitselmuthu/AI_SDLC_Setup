@@ -41,6 +41,9 @@ STEPS = {
     "economics": ("economics.md", "rom-estimate.md", "Delivery lead, finance and pursuit lead validate the estimate",
                   ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                    "target-architecture.md", "enterprise-fit.md", "delivery-approach.md"]),
+    "proposal": ("proposal.md", "proposal-package.md", "Bid manager, delivery lead and pursuit lead review the proposal before release",
+                 ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+                  "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md"]),
 }
 
 
@@ -64,7 +67,10 @@ unhandled = must_cover("enterprise-fit.md", r"\bE\d+\b", "exceptions and fit ite
 
 unestimated = must_cover("delivery-approach.md", r"\bP\d+\b", "effort estimate table")  # economics: every phase
 
-CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled, "economics": unestimated}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+unanswered = must_cover("requirements.md", r"R-\d{3}", "response to RFP requirements table")  # proposal: every requirement
+
+CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled, "economics": unestimated,
+          "proposal": unanswered}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -102,6 +108,7 @@ def design(files): run_step("design", files)      # 5. target architecture + tra
 def fit(files): run_step("fit", files)            # 6. enterprise fit: standards, exceptions, compliance questions
 def delivery(files): run_step("delivery", files)  # 7. phases, dependencies, migration, roles, risks
 def economics(files): run_step("economics", files)  # 8. ROM: effort ranges, cost drivers, savings, validation needs
+def proposal(files): run_step("proposal", files)    # 9. proposal package, claims evidenced or marked [CONFIRM]
 
 
 if __name__ == "__main__":
