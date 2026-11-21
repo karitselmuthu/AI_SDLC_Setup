@@ -260,3 +260,42 @@ def test_later_step_runs_from_earlier_briefs_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "approve", lambda who: True)
     agent.run_step("delivery", [])  # no source files given
     assert "enterprise-fit.md" in prompts[0]
+
+
+def test_economics_repairs_when_a_phase_has_no_estimate(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "economics.md").write_text("ECO")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/delivery-approach.md").write_text("P0 P1 P2")
+    replies = iter(["P0 and P2 estimated", "P0 P1 P2 estimated"])
+    monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.economics([str(doc)])
+    assert len(prompts) == 2 and "P1" in prompts[1] and "effort estimate table" in prompts[1]
+    assert (tmp_path / "briefs/rom-estimate.md").read_text() == "P0 P1 P2 estimated"
+
+
+def test_economics_feeds_in_the_delivery_approach_and_commercial_docs(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "economics.md").write_text("ECO")
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs/delivery-approach.md").write_text("P0")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.economics([str(doc)])
+    assert "delivery-approach.md" in prompts[0] and str(doc) in prompts[0]
+
+
+def test_economics_template_separates_confirmed_from_estimates():
+    text = " ".join((pathlib.Path(agent.__file__).parent / "economics.md").read_text().lower().split())
+    for needed in ("rom, not a quote", "confirmed =", "calculated =", "estimate =", "not stated =",
+                   "never invent prices, rates, volumes or headcounts", "do not convert between currencies",
+                   "expired, indicative, or not a quote is not confirmed", "high >= likely >= low",
+                   "savings are never counted in the totals", "one row for every phase",
+                   "licensing and subscription", "cloud and service usage factors", "potential savings",
+                   "confidence", "exclusions", "validation needs", "sensitivity"):
+        assert needed in text, needed
+
+
+def test_sample_commercial_inputs_contain_the_traps():
+    s = (pathlib.Path(agent.__file__).parent / "samples/commercial-inputs.md").read_text()
+    assert "valid until 31 August 2026" in s and "GBP" in s and "USD" in s and "not a quote" in s

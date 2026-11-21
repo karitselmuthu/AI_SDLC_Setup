@@ -38,6 +38,9 @@ STEPS = {
     "delivery": ("delivery.md", "delivery-approach.md", "Delivery lead and pursuit lead review the roadmap and responsibilities",
                  ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                   "target-architecture.md", "enterprise-fit.md"]),
+    "economics": ("economics.md", "rom-estimate.md", "Delivery lead, finance and pursuit lead validate the estimate",
+                  ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
+                   "target-architecture.md", "enterprise-fit.md", "delivery-approach.md"]),
 }
 
 
@@ -59,7 +62,9 @@ unassessed = must_cover("target-architecture.md", r"\b[KI]\d+\b", "fit assessmen
 
 unhandled = must_cover("enterprise-fit.md", r"\bE\d+\b", "exceptions and fit items table")  # delivery: every exception
 
-CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
+unestimated = must_cover("delivery-approach.md", r"\bP\d+\b", "effort estimate table")  # economics: every phase
+
+CHECKS = {"design": untraced, "fit": unassessed, "delivery": unhandled, "economics": unestimated}  # step -> fn(briefs_dir, output_text) -> fix-up prompt or ''
 
 
 def run_step(name, files):
@@ -96,6 +101,7 @@ def options(files): run_step("options", files)    # 4. solution options + recomm
 def design(files): run_step("design", files)      # 5. target architecture + traceability
 def fit(files): run_step("fit", files)            # 6. enterprise fit: standards, exceptions, compliance questions
 def delivery(files): run_step("delivery", files)  # 7. phases, dependencies, migration, roles, risks
+def economics(files): run_step("economics", files)  # 8. ROM: effort ranges, cost drivers, savings, validation needs
 
 
 if __name__ == "__main__":
