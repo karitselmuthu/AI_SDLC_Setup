@@ -107,3 +107,23 @@ def test_assess_template_covers_the_step_3_outputs():
     for needed in ("Current systems", "Interfaces", "Data flows", "Hosting", "Identity", "pain points",
                    "Dependencies", "Gaps", "client confirmation", "mermaid", "never invent"):
         assert needed.lower() in text.lower(), needed
+
+
+def test_options_feeds_in_all_three_earlier_briefs(tmp_path, monkeypatch):
+    doc, prompts = _setup(tmp_path, monkeypatch)
+    (tmp_path / "options.md").write_text("O")
+    (tmp_path / "briefs").mkdir()
+    for f in ("opportunity-brief.md", "requirements.md", "current-state.md"):
+        (tmp_path / "briefs" / f).write_text("x")
+    monkeypatch.setattr(agent, "approve", lambda who: True)
+    agent.options([str(doc)])
+    assert all(f in prompts[0] for f in ("opportunity-brief.md", "requirements.md", "current-state.md"))
+    assert (tmp_path / "briefs/solution-options.md").read_text() == "out"
+
+
+def test_options_template_enforces_comparison_and_honesty():
+    text = (pathlib.Path(agent.__file__).parent / "options.md").read_text().lower()
+    for needed in ("fit", "risk", "cost drivers", "complexity", "time to deliver", "recommendation",
+                   "assumptions register", "trade-offs", "never invent", "do not invent prices",
+                   "not met", "change freeze", "what would change the recommendation"):
+        assert needed in text, needed

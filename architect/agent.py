@@ -27,6 +27,8 @@ STEPS = {
                  ["opportunity-brief.md"]),
     "assess": ("assess.md", "current-state.md", "Tech lead confirms the current-state view",
                ["opportunity-brief.md", "requirements.md"]),
+    "options": ("options.md", "solution-options.md", "Tech lead and pursuit lead review the options and recommendation",
+                ["opportunity-brief.md", "requirements.md", "current-state.md"]),
 }
 
 
@@ -55,6 +57,7 @@ def run_step(name, files):
 def qualify(files): run_step("qualify", files)    # 1. opportunity brief
 def discover(files): run_step("discover", files)  # 2. requirements
 def assess(files): run_step("assess", files)      # 3. current-state view
+def options(files): run_step("options", files)    # 4. solution options + recommendation
 
 
 if __name__ == "__main__":
