@@ -112,12 +112,15 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 
 | 5 | `implement` | `--repo PATH` (reads the approved change plan itself) | `implementation-report.md`, plus the edits on a new git branch | Tech lead |
 
+| 6 | `tests` | `--repo PATH` (on the branch step 5 created), optional `--check CMD` | `test-report.md`, plus test edits on that branch | Tech lead |
+
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
 python coder/agent.py inspect --repo .
 python coder/agent.py detect --repo .
 python coder/agent.py plan --repo .
 python coder/agent.py implement --repo /path/to/the/repo
+python coder/agent.py tests --repo /path/to/the/repo
 ```
 
 **Step 5 is the first step that edits code, so it is fenced in.** It refuses to run until the change plan is approved by both reviewers, unedited
@@ -129,6 +132,20 @@ and not stale, and the target must be a git repository with no uncommitted chang
 - asks the model to follow the repository's conventions and reuse existing code, to stop with "Blocked:" and make no edit when the plan turns out to be wrong, and to say what it did not do. It cannot run tests: running them is not part of this step.
 
 Your own Claude Code hooks apply to the edit agent too, so a fact-forcing hook (such as GateGuard) makes the agent state its facts and retry.
+
+**Step 6 adds the developer-level tests and runs the repository's local checks.** It needs the step 5 report approved and the repository on the
+branch that step created. The model writes tests and may edit **test files only** (`tests/`, `test_*.py`, `*.spec.*`, `conftest.py`,
+fixtures...): this is enforced with a glob allow-list on the Edit tool and re-checked in code, and any edit to production code is reverted and
+reported. The prompt demands normal, boundary and failure cases for every acceptance criterion, deterministic fixtures (no network, clock or
+randomness), no weakening, deleting or skipping of existing tests, and "Production defect suspected" instead of fixing code. A code check
+requires a complete test matrix row for every criterion.
+
+**The code, not the model, runs the checks** (the agent has no shell). The commands come from the approved stack profile (test, lint and type
+commands only; installs, deploys, network, git, `rm` and shell chaining are filtered out) or from `--check CMD`, and the tech lead approves the
+list before anything runs. The checks run once before the model edits (a baseline) and again after, so new failures are told apart from ones that were
+already there. Failing output is fed back to the model to fix the tests, at most 3 times, and then a human decides. Failures, timeouts and "not run"
+are recorded as they are, never hidden. The report is stamped **"development verification, not independent QA sign-off"**, and a claim of QA
+sign-off by the model is removed. A scan flags removed or weakened assertions, removed tests, and added skips for the reviewer.
 
 Step 4 refuses to run until the ticket plan, the inspection and the stack profile are all approved, unedited and not stale. It breaks the
 work into **small changes** (each rated S or M, at most 12) with the files, functions, interfaces, data models and migrations, configuration
@@ -185,7 +202,7 @@ docs/architect/samples/  made-up client documents and a sample technology catalo
 tests/                all tests, kept apart from the code (pytest.ini sets the paths)
   test_architect.py, test_baseline.py, test_sdlc.py   unit tests
   test_acceptance.py    one test group per acceptance case (see below)
-  test_coder.py, test_stack.py, test_implement.py   coding agent, stack scanner and implement-step tests
+  test_coder.py, test_stack.py, test_implement.py, test_tests_step.py   coding agent, stack scanner, implement and tests-step tests
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
