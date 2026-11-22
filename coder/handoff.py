@@ -165,12 +165,29 @@ def decide(briefs, package, branch, head, i, input_fn=None, tty=None):
         return "later", None
     why = needs_reason(i)
     reason = input_fn("reason" + (f" (required: {', '.join(why)})" if d == "approve" and why else "") + "> ").strip()
-    if (d == "approve" and why or d in ("changes", "reject")) and not reason:
-        print("A reason is required here; nothing was recorded.")
+    err = record_problem(d, name, reason, i)
+    if err:
+        print(err + "; nothing was recorded.")
         return "later", None
-    rec = dict(time=datetime.now(timezone.utc).isoformat(timespec="seconds"), decision=d, meaning=DECISIONS[d], reviewer=name, role=REVIEWER,
-               package_sha256=sha(pathlib.Path(package).read_text()), branch=branch, start_commit=head, reason=reason,
-               known_issues_at_decision=why, merged_by_agent=False)
+    return d, record(briefs, package, branch, head, i, d, name, reason)
+
+
+def record_problem(decision, name, reason, i):
+    """Why a decision cannot be recorded ('' if it can). The same rules for the terminal and for the web page."""
+    if decision not in ("approve", "changes", "reject"):
+        return f"'{decision}' is not a decision"
+    if not (name or "").strip():
+        return "A decision needs the reviewer's name"
+    if (decision == "approve" and needs_reason(i) or decision in ("changes", "reject")) and not (reason or "").strip():
+        return "A reason is required here"
+    return ""
+
+
+def record(briefs, package, branch, head, i, decision, name, reason):
+    """Append the reviewer's decision to handoff-decisions.log (never merges anything) and return the record."""
+    rec = dict(time=datetime.now(timezone.utc).isoformat(timespec="seconds"), decision=decision, meaning=DECISIONS[decision],
+               reviewer=name.strip(), role=REVIEWER, package_sha256=sha(pathlib.Path(package).read_text()), branch=branch,
+               start_commit=head, reason=(reason or "").strip(), known_issues_at_decision=needs_reason(i), merged_by_agent=False)
     with open(pathlib.Path(briefs) / "handoff-decisions.log", "a") as f:
         f.write(json.dumps(rec) + "\n")
-    return d, rec
+    return rec

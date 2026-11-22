@@ -5,15 +5,18 @@ Usage: python architect/agent.py <step> FILE...      (FILEs: RFPs, notes, diagra
 Each step reads earlier steps' outputs from briefs/ automatically and writes its own there.
 Steps: see STEPS below.
 """
+import os
 import pathlib
 import re
 import shutil
 import sys
 from datetime import datetime, timezone
 
-HERE = pathlib.Path(__file__).resolve().parent  # code, and where outputs go: briefs/ and baseline/
-PROMPTS = HERE.parent / "docs" / "architect"  # the prompt template for each step, and samples/
-sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a script
+CODE = pathlib.Path(__file__).resolve().parent
+# where outputs go (briefs/ and baseline/): next to the code, or in a project workspace when SDLC_WORKSPACE is set (the web app)
+HERE = pathlib.Path(os.environ["SDLC_WORKSPACE"]) / "architect" if os.environ.get("SDLC_WORKSPACE") else CODE
+PROMPTS = CODE.parent / "docs" / "architect"  # the prompt template for each step, and samples/
+sys.path.insert(0, str(CODE.parent))  # so `import core` works when run as a script
 
 import core  # noqa: E402
 from core import approve, ask, flagged, false_approval  # noqa: E402,F401  (shared safety checks live in core)

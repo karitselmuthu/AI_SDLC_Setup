@@ -221,6 +221,23 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
+## Web page
+
+```bash
+python web/app.py            # opens http://127.0.0.1:8765/ ; use --port N to change it, --no-open to not open a browser
+```
+
+Enter the project name and information (and any documents), then follow the **Architect** (12 steps) and the **Coder** (9 steps) on one page. Each
+track shows every step's status, who has approved, and buttons to run the next step or all steps. **Run all** pauses at every approval. When a step
+finishes a draft, a **Needs you** panel shows the draft and the role you are approving as: **Approve**, or **Send back** with feedback (required).
+Your click is the only thing that answers the agent's `approve? [y/N]` prompt, and it is written to the same approvals ledger the command line uses.
+Status comes from that ledger, not from what a model says. For the Coder, set the repository folder and paste the approved ticket under
+"Documents and Coder setup"; its handoff step ends with a **Reviewer decision** form (the page never merges anything).
+
+Each project keeps its own files under `projects/<id>/` (git-ignored). It uses only the standard library and listens on 127.0.0.1 only, with a
+Host and Origin check and a per-run token on every change, so another web page cannot approve for you. It is not a login: anyone who can use this
+computer's browser can approve. Documents can only be read from a fixed list of file names inside the project.
+
 ## The SDLC pipeline
 
 ```bash
@@ -255,6 +272,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
   test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
   test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
+  test_web.py                                                           the web page: projects, status, approvals, security
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 

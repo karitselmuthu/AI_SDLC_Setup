@@ -15,6 +15,7 @@ Steps 7 and 8 only read. They never push and never open the pull request: they p
 Step 9 calls no model: it assembles the reviewer's package from the approved records and git. The reviewer makes the merge decision.
 TICKET is the approved ticket; FILEs are designs, standards or other inputs; PATH is the repository to work in.
 """
+import os
 import pathlib
 import difflib
 import fnmatch
@@ -25,9 +26,11 @@ import sys
 import time
 from datetime import datetime, timezone
 
-HERE = pathlib.Path(__file__).resolve().parent  # code, and where outputs go: briefs/
-PROMPTS = HERE.parent / "docs" / "coder"  # the prompt for each step, and samples/
-sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a script
+CODE = pathlib.Path(__file__).resolve().parent
+# where outputs go (briefs/): next to the code, or in a project workspace when SDLC_WORKSPACE is set (the web app)
+HERE = pathlib.Path(os.environ["SDLC_WORKSPACE"]) / "coder" if os.environ.get("SDLC_WORKSPACE") else CODE
+PROMPTS = CODE.parent / "docs" / "coder"  # the prompt for each step, and samples/
+sys.path.insert(0, str(CODE.parent))  # so `import core` works when run as a script
 
 import core  # noqa: E402
 from core import approve, ask, flagged, false_approval  # noqa: E402
