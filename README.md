@@ -11,7 +11,6 @@ every output is a draft, and only a named human reviewer can approve it (or send
 | **Coding agent** | Developer for one approved ticket | A reviewed code change on a new git branch, tests, pull-request text and a package for the human reviewer | 9 | `coder/agent.py` |
 | **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
 | **Web page** | One place to enter a project and follow all three | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
-| SDLC pipeline | An older, single-script pipeline (issue to deploy) | Plan, code, test, review | 7 agents | `sdlc.py` |
 
 All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
 Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
@@ -20,7 +19,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
 [Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Web page](#web-page) ·
-[SDLC pipeline](#the-sdlc-pipeline) · [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
+[Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
 
@@ -339,19 +338,6 @@ Each project keeps its own files under `projects/<id>/` (git-ignored). It uses o
 Host and Origin check and a per-run token on every change, so another web page cannot approve for you. It is not a login: anyone who can use this
 computer's browser can approve. Documents can only be read from a fixed list of file names inside the project.
 
-## The SDLC pipeline
-
-```bash
-python sdlc.py "Add calc.py with add(a, b)" --test "pytest -q"   # plan -> design -> build -> test -> review -> deploy -> operate
-python sdlc.py --review /path/to/repo --test "pytest -q"          # review and fix a repo on a new branch
-```
-
-Seven agents (triage, architect, coding, QA, review, release, SRE) each have their own role, session and tool limits.
-Only the coding agent can edit freely; QA may edit tests only; the others are read-only. Test failures go back to the coding agent, up to 5 tries.
-Humans approve plan, design, review, deploy and operate. The release agent writes a plan and never deploys.
-Review-fix mode refuses a repo with uncommitted changes and commits fixes to a new `sdlc-fixes-*` branch.
-This pipeline has been dry-run on a toy issue; it has not had the same step-by-step testing as the architect agent.
-
 ## Repository layout
 
 ```
@@ -362,7 +348,6 @@ web/              Web page: app.py (standard-library server) and index.html (the
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
 skipplan.py       Rules that suggest which steps a project may not need
 tokens.py         Per-step token and cost report from usage.jsonl
-sdlc.py           The older SDLC pipeline and review-fix mode
 docs/             The prompts the agents read (these are code): docs/architect, docs/coder, docs/qa, each with _rules.md; samples in docs/*/samples
 tests/            All tests (pytest.ini sets the paths)
 projects/         One folder per web-page project (git-ignored)
@@ -371,7 +356,7 @@ architect/briefs, coder/briefs, qa/briefs, */baseline, usage.jsonl    generated 
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log); `test_sdlc.py` (pipeline).
+`test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 

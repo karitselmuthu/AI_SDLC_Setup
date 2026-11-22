@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Architect agent. Owns everything architect-related; sdlc.py just uses it for its design stage.
+"""Architect agent. Owns everything architect-related.
 
 Usage: python architect/agent.py <step> FILE...      (FILEs: RFPs, notes, diagrams, inventories, standards)
 Each step reads earlier steps' outputs from briefs/ automatically and writes its own there.

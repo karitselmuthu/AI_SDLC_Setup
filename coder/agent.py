@@ -335,7 +335,7 @@ TEST_GLOBS = ["tests/**", "test/**", "__tests__/**", "spec/**", "specs/**", "**/
 MAX_FIX = 3  # how many times failing checks are fed back to the model before a human decides
 CHECK_WORDS = re.compile(r"(?i)\b(test|tests|lint|linter|type|typecheck|check|format|verify)\b")  # in the PURPOSE column
 # only recognised check runners are ever run automatically; a command that merely mentions one (for example
-# `python sdlc.py ... --test "pytest -q"`, which launches a whole pipeline) is not a check
+# `python run_all.py --test "pytest -q"`, which launches a whole pipeline) is not a check
 RUNNERS = re.compile(r"(?i)^(python3? -m )?(pytest|unittest|tox|nox|ruff|flake8|pylint|mypy|pyright|black|isort|coverage)\b"
                      r"|^(npm|yarn|pnpm|bun)( run)? (test|lint|typecheck|check|format:check)\b"
                      r"|^(\./)?(mvn|mvnw|gradle|gradlew)\b.*\b(test|check|verify)\b|^(go|cargo|dotnet|swift) (test|vet|clippy|check)\b"
