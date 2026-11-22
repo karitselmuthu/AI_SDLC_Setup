@@ -96,6 +96,24 @@ Versions are never overwritten. A new run publishes `v2`, and the handoff docume
 
 The log is a local file. It shows what was approved, but it is not tamper-proof.
 
+## The coding agent
+
+A separate agent in `coder/`, built one activity at a time like the architect. It is read-only until a plan is approved.
+
+| # | Command | What you pass | Output in `coder/briefs/` | Reviewers |
+|---|---|---|---|---|
+| 1 | `understand` | The approved ticket, then any design or standards files, and `--repo PATH` | `implementation-plan.md` | Tech lead, ticket owner (each signs separately) |
+
+```bash
+python coder/agent.py understand docs/coder/samples/ticket.md --repo .
+```
+
+Step 1 reads the ticket, design and repository guidance (CLAUDE.md, README, CONTRIBUTING, test setup) and writes a short plan linked to the
+ticket. It lists every ambiguity, missing input and conflict as a numbered question with the criteria it blocks and the assumption it would
+use, and never resolves one silently. A ticket that does not state its approval is a blocker. The code checks that the plan defines numbered
+acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
+data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
+
 ## The SDLC pipeline
 
 ```bash
@@ -117,12 +135,15 @@ architect/            architect agent code
   baseline.py           approval ledger and versioned packaging
   briefs/               generated outputs (not committed)
   baseline/             generated baselines (not committed)
-core.py               shared runner: role, tool limits, session, budget, approval prompt
+coder/                coding agent code (agent.py); outputs go to coder/briefs/ (not committed)
+core.py               shared runner: role, tool limits, session, budget, approval prompt, injection scan
 sdlc.py               the SDLC pipeline and review-fix mode
 docs/architect/       the 12 step prompts and _rules.md, the rules shared by every step (these are code: the agent reads them)
 docs/architect/samples/  made-up client documents and a sample technology catalog for trying the steps
 test_architect.py, test_baseline.py   unit tests
 test_acceptance.py    one test group per acceptance case (see below)
+test_coder.py         coding agent tests
+docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
 ## Testing
