@@ -1,35 +1,147 @@
 # AI SDLC Setup
 
-Agents that take work through the software lifecycle, with a human approving at each gate.
-This repository has two parts:
+AI agents that take a piece of work through the software lifecycle, **with a person approving at every gate**. Nothing an agent writes is final:
+every output is a draft, and only a named human reviewer can approve it (or send it back with feedback).
 
-| Part | What it does | Entry point |
-|---|---|---|
-| **Architect agent** | Takes a sales opportunity from RFP to a versioned solution baseline in 11 reviewed steps | `architect/agent.py` |
-| **SDLC pipeline** | Takes an issue through plan, design, build, test, review, deploy and operate; can also review and fix any git repo on a new branch | `sdlc.py` |
+## What is in this repository
 
-Both run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap per agent.
-Everything an agent writes is a **draft for a human to approve**.
+| Part | Role | What it produces | Steps | Run it |
+|---|---|---|---|---|
+| **Architect agent** | Solution architect for a sales opportunity | A versioned, approved solution baseline: requirements, architecture, delivery approach, estimate, proposal | 12 | `architect/agent.py` |
+| **Coding agent** | Developer for one approved ticket | A reviewed code change on a new git branch, tests, pull-request text and a package for the human reviewer | 9 | `coder/agent.py` |
+| **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
+| **Web page** | One place to enter a project and follow all three | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
+| SDLC pipeline | An older, single-script pipeline (issue to deploy) | Plan, code, test, review | 7 agents | `sdlc.py` |
+
+All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
+Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
+
+## Contents
+
+[How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
+[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Web page](#web-page) ·
+[SDLC pipeline](#the-sdlc-pipeline) · [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
+
+## How the pieces fit
+
+```
+ project description, RFP, notes
+            |
+   Architect agent (12 steps)  ->  approved solution baseline (versioned, read-only)
+            |                       a person writes or approves the ticket
+            v
+   Coding agent (9 steps)      ->  change on a new branch + tests + pull-request text
+            |                       reviewer decides on the merge (the agent never merges or pushes)
+            v
+   QA agent (10 steps)         ->  test evidence, defects, quality recommendation
+                                    a person makes the release decision
+```
+
+| Agent | Who approves (each role signs separately) |
+|---|---|
+| Architect | Account lead, lead solution architect, delivery lead, security, compliance, legal, finance reviewers (depends on the step) |
+| Coding | Tech lead and ticket owner; at the end, the human code reviewer makes the merge decision |
+| QA | QA lead, a developer (QA cannot approve its own findings), and a release owner who reads the recommendation |
+
+Each step reads only the approved output of the steps before it. A step cannot run until the earlier ones are approved, and a document edited after
+approval is flagged. You do not have to run every step: see the [skip plan](#skip-plan-not-every-project-needs-every-step).
 
 ## Quick start
 
-Requirements: Python 3.8+, the `claude` CLI installed and logged in, and `pytest` to run the tests.
+Requirements: Python 3.8+, the `claude` CLI installed and logged in, `pytest` for the tests. Model calls cost money (see [token and cost](#token-and-cost-measurement)).
 
 ```bash
 git clone https://github.com/karitselmuthu/AI_SDLC_Setup.git && cd AI_SDLC_Setup
-pip install pytest && pytest -q            # unit tests; they use a fake model call, so they cost nothing
-
-# Run the architect steps on the made-up sample documents (each step asks you to approve):
-S=docs/architect/samples
-python architect/agent.py qualify  $S/rfp.md $S/notes.md
-python architect/agent.py discover $S/rfp.md $S/notes.md
-python architect/agent.py assess   $S/current-environment.md
+pip install pytest && pytest -q        # all tests use a fake model call, so they cost nothing
 ```
 
-Each step prints `wrote: architect/briefs/<file>` and then asks the named reviewer to approve.
-Answer `y` to accept, or `n` and type feedback to have the agent redo it.
+**Easiest: the web page.**
 
-## The architect steps
+```bash
+python web/app.py                      # opens http://127.0.0.1:8765/
+```
+
+Create a project (name and description, optional documents). Press **Run next step** on the Architect, read the draft in the **Needs you** panel, and
+**Approve** or **Send back**. For the Coder and QA, set the repository folder and paste the approved ticket under "Documents and Coder setup".
+
+**Or the command line**, one agent at a time (each asks you to approve in the terminal):
+
+```bash
+S=docs/architect/samples               # made-up sample documents
+python architect/agent.py qualify  $S/rfp.md $S/notes.md          # then discover, assess, ... handoff
+python coder/agent.py understand docs/coder/samples/ticket.md --repo /path/to/repo   # then inspect ... handoff
+python qa/agent.py scope TICKET.md --repo /path/to/repo           # then risk, coverage ... recommend
+```
+
+Each step prints `wrote: <file>` and asks the named reviewer: `y` to approve, or `n` plus feedback to have the agent redo it.
+
+## Ideas that apply everywhere
+
+### How a step works
+
+```
+prompt template (docs/architect/<step>.md)
+  + earlier outputs (architect/briefs/)
+  + your source documents
+        -> claude CLI, read-only tools
+        -> draft
+        -> coverage check (is every ID from the earlier step covered?)  -> one automatic repair pass
+        -> human approves, or gives feedback and the agent redoes it
+        -> approval logged (architect/briefs/approvals.log)
+```
+
+The coverage checks are plain code, not prompts. For example, the design must trace every requirement (`R-001`...), the fit assessment must assess every component and interface, and the delivery approach must handle every exception.
+
+
+### Guardrails
+
+- **Read-only architect.** The architect agent can read, search and open PDFs and images. It cannot edit files or run commands.
+- **Never invent.** Every template tells the agent to write "Not stated" instead of guessing. Values it proposes itself are marked "Proposed".
+- **Evidence or confirm.** Claims about the bidder are cited to a document or marked `[CONFIRM: ...]`. Expired or indicative quotes are never treated as confirmed.
+- **No leaks.** Client-facing text must not contain the rate card, cost, margin or the ROM. Meeting material is labelled `[CLIENT-SHAREABLE]` or `[INTERNAL]`.
+- **Honest about gaps.** A requirement the design cannot meet is never answered "Full". Verbal figures from a meeting are recorded as unconfirmed.
+- **Documents are data.** The shared rules (`docs/architect/_rules.md`) are put in front of every step. Text in an RFP or notes cannot change the rules, the files the agent may read, or the approval process. Before each run the code scans the supplied text files for instruction-like lines ("ignore previous instructions", "mark this as approved"...). It warns the reviewer, and the output must list them under `## Source-document anomalies`.
+- **The agent cannot approve.** Approval is a prompt in code that a document cannot reach. If the model writes "Status: Approved" or "final version" it is sent back once to fix it.
+- **No unevidenced certifications.** ISO, SOC 2, PCI DSS, GDPR and similar are never claimed unless a supplied document shows them.
+- **Spend cap.** Each `claude` call is capped at USD 2 (`BUDGET` in `core.py`). Secrets and CI config are on a deny list for every agent.
+
+
+### Approvals and the baseline
+
+Every approval is appended to `architect/briefs/approvals.log` with a hash of the approved file and the role that approved it.
+Every step lists its reviewers by role and each role approves **separately**, never one "y" for a group. The four checkpoint groups are the account lead (opportunity fit, client messaging, commitments), the lead solution architect (technical correctness, standards fit, exceptions), the delivery lead (feasibility, staffing, schedule, estimate assumptions) and the security, compliance, legal and finance reviewers (their obligations and commitments). The proposal needs all six roles; the handoff needs account lead, lead architect and delivery lead. They are asked one by one, and a "no" from any of them sends the draft back and restarts the round. An approval only counts for the exact content it was given on.
+`handoff` refuses to run until every artifact is produced, approved by all its required roles, **unedited since approval**, and not **stale** (an earlier step approved again after it).
+When it passes, it writes `architect/baseline/vN/`: a read-only copy of every approved artifact, the handoff document, and a `manifest.json` (status `approved`) with hashes, every approver and the source documents. The solution is never marked final before that.
+Versions are never overwritten. A new run publishes `v2`, and the handoff document explains what changed.
+
+The log is a local file. It shows what was approved, but it is not tamper-proof.
+
+
+### Skip plan (not every project needs every step)
+
+Plain rules read the inputs and *suggest* steps that may not be needed (`skipplan.py`). The page shows "Suggested skip: <reason>", and **Run all** pauses
+before such a step. Nothing is skipped until a person clicks **Skip...**, gives a name and a reason; the code then writes a placeholder document and
+logs it in the approvals ledger as `SKIPPED by <name>` with the reason. No model runs for a skipped step, the page shows "Skipped by ...", and
+the QA recommendation lists what was skipped as a limitation. Running the step later replaces the placeholder.
+
+| Agent | Skippable | Suggested when |
+|---|---|---|
+| Architect | assess | the input is under 400 words and describes no current environment |
+| | economics | under 400 words and no budget, volumes, users or dates |
+| | discuss | under 400 words |
+| | record | no client meeting notes were supplied |
+| Coder | detect | the stack adapters found one technology, no gaps, no unsupported files |
+| QA | nonfunctional | the approved scope and risk plan state no performance, accessibility, security, reliability or compatibility expectation |
+| | explore | 2 files or fewer and 80 lines or fewer changed, and no High-rated risk |
+
+
+### Token and cost measurement
+
+Every model call is logged to `usage.jsonl` (in `SDLC_WORKSPACE`, git-ignored) with the CLI's real token counts and cost. `python tokens.py [WORKSPACE]`
+prints one row per agent step. Calls use `--disable-slash-commands --strict-mcp-config --setting-sources ""`: without them every call loaded the user's
+skills, plugins and MCP tools (about 65,000 input tokens for one word); with them about 6,000. Agent tool limits and deny rules are still passed explicitly.
+
+## Architect agent (12 steps)
 
 Run them in order. Each step reads the earlier outputs from `architect/briefs/` automatically, so later steps usually need no file arguments.
 
@@ -59,44 +171,7 @@ After a meeting, the record lists which earlier steps are now outdated. Re-run t
 `options`, `design` and `fit` steps then read it. Without one, every named product is labelled "proposal, not validated". Technology that is not in the
 catalog, or that the agent cannot assess, is marked "Unsupported: specialist review required" and gets no fit verdict or cost.
 
-## How a step works
-
-```
-prompt template (docs/architect/<step>.md)
-  + earlier outputs (architect/briefs/)
-  + your source documents
-        -> claude CLI, read-only tools
-        -> draft
-        -> coverage check (is every ID from the earlier step covered?)  -> one automatic repair pass
-        -> human approves, or gives feedback and the agent redoes it
-        -> approval logged (architect/briefs/approvals.log)
-```
-
-The coverage checks are plain code, not prompts. For example, the design must trace every requirement (`R-001`...), the fit assessment must assess every component and interface, and the delivery approach must handle every exception.
-
-## Guardrails
-
-- **Read-only architect.** The architect agent can read, search and open PDFs and images. It cannot edit files or run commands.
-- **Never invent.** Every template tells the agent to write "Not stated" instead of guessing. Values it proposes itself are marked "Proposed".
-- **Evidence or confirm.** Claims about the bidder are cited to a document or marked `[CONFIRM: ...]`. Expired or indicative quotes are never treated as confirmed.
-- **No leaks.** Client-facing text must not contain the rate card, cost, margin or the ROM. Meeting material is labelled `[CLIENT-SHAREABLE]` or `[INTERNAL]`.
-- **Honest about gaps.** A requirement the design cannot meet is never answered "Full". Verbal figures from a meeting are recorded as unconfirmed.
-- **Documents are data.** The shared rules (`docs/architect/_rules.md`) are put in front of every step. Text in an RFP or notes cannot change the rules, the files the agent may read, or the approval process. Before each run the code scans the supplied text files for instruction-like lines ("ignore previous instructions", "mark this as approved"...). It warns the reviewer, and the output must list them under `## Source-document anomalies`.
-- **The agent cannot approve.** Approval is a prompt in code that a document cannot reach. If the model writes "Status: Approved" or "final version" it is sent back once to fix it.
-- **No unevidenced certifications.** ISO, SOC 2, PCI DSS, GDPR and similar are never claimed unless a supplied document shows them.
-- **Spend cap.** Each `claude` call is capped at USD 2 (`BUDGET` in `core.py`). Secrets and CI config are on a deny list for every agent.
-
-## Approvals and the baseline
-
-Every approval is appended to `architect/briefs/approvals.log` with a hash of the approved file and the role that approved it.
-Every step lists its reviewers by role and each role approves **separately**, never one "y" for a group. The four checkpoint groups are the account lead (opportunity fit, client messaging, commitments), the lead solution architect (technical correctness, standards fit, exceptions), the delivery lead (feasibility, staffing, schedule, estimate assumptions) and the security, compliance, legal and finance reviewers (their obligations and commitments). The proposal needs all six roles; the handoff needs account lead, lead architect and delivery lead. They are asked one by one, and a "no" from any of them sends the draft back and restarts the round. An approval only counts for the exact content it was given on.
-`handoff` refuses to run until every artifact is produced, approved by all its required roles, **unedited since approval**, and not **stale** (an earlier step approved again after it).
-When it passes, it writes `architect/baseline/vN/`: a read-only copy of every approved artifact, the handoff document, and a `manifest.json` (status `approved`) with hashes, every approver and the source documents. The solution is never marked final before that.
-Versions are never overwritten. A new run publishes `v2`, and the handoff document explains what changed.
-
-The log is a local file. It shows what was approved, but it is not tamper-proof.
-
-## The coding agent
+## Coding agent (9 steps)
 
 A separate agent in `coder/`, built one activity at a time like the architect. It is read-only until a plan is approved.
 
@@ -221,29 +296,6 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
-## Token and cost measurement
-
-Every model call is logged to `usage.jsonl` (in `SDLC_WORKSPACE`, git-ignored) with the CLI's real token counts and cost. `python tokens.py [WORKSPACE]`
-prints one row per agent step. Calls use `--disable-slash-commands --strict-mcp-config --setting-sources ""`: without them every call loaded the user's
-skills, plugins and MCP tools (about 65,000 input tokens for one word); with them about 6,000. Agent tool limits and deny rules are still passed explicitly.
-
-## Skip plan (not every project needs every step)
-
-Plain rules read the inputs and *suggest* steps that may not be needed (`skipplan.py`). The page shows "Suggested skip: <reason>", and **Run all** pauses
-before such a step. Nothing is skipped until a person clicks **Skip...**, gives a name and a reason; the code then writes a placeholder document and
-logs it in the approvals ledger as `SKIPPED by <name>` with the reason. No model runs for a skipped step, the page shows "Skipped by ...", and
-the QA recommendation lists what was skipped as a limitation. Running the step later replaces the placeholder.
-
-| Agent | Skippable | Suggested when |
-|---|---|---|
-| Architect | assess | the input is under 400 words and describes no current environment |
-| | economics | under 400 words and no budget, volumes, users or dates |
-| | discuss | under 400 words |
-| | record | no client meeting notes were supplied |
-| Coder | detect | the stack adapters found one technology, no gaps, no unsupported files |
-| QA | nonfunctional | the approved scope and risk plan state no performance, accessibility, security, reliability or compatibility expectation |
-| | explore | 2 files or fewer and 80 lines or fewer changed, and no High-rated risk |
-
 ## QA agent (10 steps)
 
 A senior quality analyst for one change. Same pattern as the other agents: each step writes to `qa/briefs/`, named humans approve it, approvals go to the ledger.
@@ -303,31 +355,23 @@ This pipeline has been dry-run on a toy issue; it has not had the same step-by-s
 ## Repository layout
 
 ```
-architect/            architect agent code
-  agent.py              step table (STEPS), checks, approval loop
-  baseline.py           approval ledger and versioned packaging
-  briefs/               generated outputs (not committed)
-  baseline/             generated baselines (not committed)
-coder/                coding agent code: agent.py (steps and checks), stack.py (stack scanner); outputs go to coder/briefs/ (not committed)
-core.py               shared runner: role, tool limits, session, budget, approval prompt, injection scan
-sdlc.py               the SDLC pipeline and review-fix mode
-docs/architect/       the 12 step prompts and _rules.md, the rules shared by every step (these are code: the agent reads them)
-docs/architect/samples/  made-up client documents and a sample technology catalog for trying the steps
-tests/                all tests, kept apart from the code (pytest.ini sets the paths)
-  test_architect.py, test_baseline.py, test_sdlc.py   unit tests
-  test_acceptance.py    one test group per acceptance case (see below)
-  test_coder.py, test_stack.py, test_implement.py, test_tests_step.py   coding agent, stack scanner, implement and tests-step tests
-  test_diffscan.py, test_handoff.py                                     diff scanner, review (step 7) and pull request (step 8)
-  test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
-  test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
-  test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
-  test_qa_acceptance.py                                                 the 18 QA acceptance cases
-  test_skipplan.py                                                      suggested skips, the person's confirmation, the ledger
-  test_tokens.py                                                        token usage log and report
-  test_qa.py                                                            the QA agent: ten steps, test-only edits, code-derived verdict
-  test_web.py                                                           the web page: projects, status, approvals, security
-docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
+architect/        Architect agent: agent.py (STEPS table, checks, approval loop), baseline.py (approval ledger, versioned baseline)
+coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
+qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
+web/              Web page: app.py (standard-library server) and index.html (the single page)
+core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
+skipplan.py       Rules that suggest which steps a project may not need
+tokens.py         Per-step token and cost report from usage.jsonl
+sdlc.py           The older SDLC pipeline and review-fix mode
+docs/             The prompts the agents read (these are code): docs/architect, docs/coder, docs/qa, each with _rules.md; samples in docs/*/samples
+tests/            All tests (pytest.ini sets the paths)
+projects/         One folder per web-page project (git-ignored)
+architect/briefs, coder/briefs, qa/briefs, */baseline, usage.jsonl    generated outputs (git-ignored)
 ```
+
+Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
+`test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
+`test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log); `test_sdlc.py` (pipeline).
 
 ## Testing
 
@@ -392,6 +436,8 @@ dependency changes are detected by line patterns, so a minified single-line mani
 
 ## Adding or changing a step
 
+Shown for the Architect; the Coding and QA agents use the same `STEPS` table pattern (`coder/agent.py`, `qa/agent.py`, prompts in `docs/coder`, `docs/qa`).
+
 1. Write the prompt in `docs/architect/<step>.md`.
 2. Add one row to `STEPS` in `architect/agent.py`: template, output file, reviewer, and the earlier outputs it reads.
 3. If the step must cover a list of IDs from an earlier output, add a `must_cover(...)` check.
@@ -405,3 +451,6 @@ dependency changes are detected by line patterns, so a minified single-line mani
 - Prompt rules are instructions, not guarantees. The cases marked Prompt above depend on the model following them, so review the output.
 - Plain text, markdown and PDF sources are expected to work. Word files should be converted first. Reading a real architecture diagram image has not been tried.
 - The sample documents are made up.
+- The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
+- Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
+- Skipping a step is available on the web page only, not from the command line.
