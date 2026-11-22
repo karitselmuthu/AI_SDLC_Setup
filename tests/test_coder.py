@@ -249,3 +249,83 @@ def test_a_rerun_keeps_the_old_inspection(tmp_path, monkeypatch):
     (tmp_path / "briefs/repository-inspection.md").write_text("OLD INSPECTION")
     agent.inspect([], str(repo))
     assert [p.read_text() for p in (tmp_path / "briefs/history").glob("repository-inspection.*")] == ["OLD INSPECTION"]
+
+
+# ---- step 3: detect the technology stack -----------------------------------------------------------------------
+
+PROFILE = ("## Status\nDraft\n## Detected files\n| manifest | `package.json` |\n| lockfile | `yarn.lock` |\n"
+           "## Unsupported or uncertain components\n| .cob | Unsupported |\n")
+
+
+def _detect_env(tmp_path, monkeypatch, reply=PROFILE, approve=lambda who: True):
+    """A mixed repo, plus an approved step 1 plan and an approved step 2 inspection."""
+    repo, prompts = _inspect_env(tmp_path, monkeypatch, reply=reply, approve=approve)
+    for rel in ("package.json", "yarn.lock", "legacy/PAY.cob"):
+        (repo / rel).parent.mkdir(exist_ok=True)
+        (repo / rel).write_text("x")
+    briefs = tmp_path / "briefs"
+    (briefs / "repository-inspection.md").write_text("INSPECTION")
+    baseline.log_approval(briefs, "inspect", briefs / "repository-inspection.md", agent.TECH)
+    return repo, prompts
+
+
+def test_detect_prompt_demands_pinning_evidence_conflicts_and_honest_marking():
+    u = txt("detect.md")
+    for part in ("file and line", "how each version is pinned", "A lockfile gives the exact resolved version",
+                 "Read from configuration, not run", "Where they disagree, report the conflict",
+                 "Unsupported", "Uncertain", "Detected", "no assumed commands or versions",
+                 "Every file in \"Detected by the code\" must appear", "ONE ROW FOR EVERY file"):
+        assert part in u
+    for title in ("Detected files", "Languages and versions", "Frameworks and libraries", "CI definitions",
+                  "Version consistency", "Unsupported or uncertain components", "Differences from the repository inspection"):
+        assert f"## {title}" in u
+
+
+def test_detect_needs_a_repo_and_an_approved_inspection(tmp_path, monkeypatch):
+    repo, prompts = _inspect_env(tmp_path, monkeypatch)  # plan approved, inspection never produced
+    with pytest.raises(SystemExit) as e:
+        agent.detect([], None)
+    assert "--repo" in str(e.value)
+    with pytest.raises(SystemExit) as e:
+        agent.detect([], str(repo))
+    assert "repository-inspection.md: not produced (run `inspect`)" in str(e.value) and prompts == []
+
+
+def test_detect_gives_the_model_what_the_scanner_found(tmp_path, monkeypatch):
+    repo, prompts = _detect_env(tmp_path, monkeypatch)
+    agent.detect([], str(repo))
+    prompt = prompts[0][1]
+    assert "Detected by the code" in prompt and "manifest: package.json" in prompt and "lockfile: yarn.lock" in prompt
+    assert ".cob (1)" in prompt and str(tmp_path / "briefs/repository-inspection.md") in prompt
+    assert (tmp_path / "briefs/stack-profile.md").read_text() == PROFILE
+
+
+def test_a_profile_that_skips_detected_files_or_unrecognised_types_is_sent_back(tmp_path, monkeypatch):
+    replies = iter(["## Detected files\nnothing relevant", PROFILE])
+    repo, prompts = _detect_env(tmp_path, monkeypatch, reply=lambda p: next(replies))
+    agent.detect([], str(repo))
+    fix = prompts[1][1]
+    assert len(prompts) == 2 and "package.json" in fix and "yarn.lock" in fix and ".cob" in fix
+    assert "Unsupported or uncertain components" in fix
+
+
+def test_a_complete_profile_needs_no_repair(tmp_path, monkeypatch):
+    repo, prompts = _detect_env(tmp_path, monkeypatch)
+    agent.detect([], str(repo))
+    assert len(prompts) == 1
+
+
+def test_invented_paths_in_a_profile_are_still_sent_back(tmp_path, monkeypatch):
+    replies = iter([PROFILE + "see `ghost/pom.xml:4`", PROFILE])
+    repo, prompts = _detect_env(tmp_path, monkeypatch, reply=lambda p: next(replies))
+    agent.detect([], str(repo))
+    assert len(prompts) == 2 and "`ghost/pom.xml`" in prompts[1][1]
+
+
+def test_detect_needs_only_the_tech_lead_and_keeps_old_profiles(tmp_path, monkeypatch):
+    asked = []
+    repo, _ = _detect_env(tmp_path, monkeypatch, approve=lambda who: asked.append(who) or True)
+    (tmp_path / "briefs/stack-profile.md").write_text("OLD PROFILE")
+    agent.detect([], str(repo))
+    assert asked == [agent.TECH]
+    assert [p.read_text() for p in (tmp_path / "briefs/history").glob("stack-profile.*")] == ["OLD PROFILE"]

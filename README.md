@@ -106,10 +106,21 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 
 | 2 | `inspect` | `--repo PATH` (reads the approved step 1 plan itself) | `repository-inspection.md` | Tech lead |
 
+| 3 | `detect` | `--repo PATH` (reads the approved step 2 inspection itself) | `stack-profile.md` | Tech lead |
+
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
 python coder/agent.py inspect --repo .
+python coder/agent.py detect --repo .
 ```
+
+Step 3 first runs a plain-code scanner (`coder/stack.py`) that finds the manifests, lockfiles, build files, framework configuration and CI
+definitions (including nested ones in a monorepo), counts languages, and lists file types it does not recognise. The model must read every
+one of those files and write the stack profile: languages, frameworks, how each version is pinned (a lockfile gives the exact one),
+commands (read from configuration, never claimed as run), what each CI file runs, and **conflicts between files**, such as one Node
+version in `package.json`, another in `.nvmrc`, and a third in the Dockerfile. Anything it cannot assess is marked **Unsupported**
+and anything unpinned, inferred or conflicting is marked **Uncertain**, with no commands or versions assumed for it. Code checks that every
+detected file and every unrecognised file type is accounted for, and that every cited path exists.
 
 Step 2 refuses to run until the step 1 plan is approved by both reviewers, unedited since, and not stale. It then reads the repository itself:
 structure, language and dependencies, build and test commands (read from configuration, never claimed as run), conventions, where tests live,
@@ -144,7 +155,7 @@ architect/            architect agent code
   baseline.py           approval ledger and versioned packaging
   briefs/               generated outputs (not committed)
   baseline/             generated baselines (not committed)
-coder/                coding agent code (agent.py); outputs go to coder/briefs/ (not committed)
+coder/                coding agent code: agent.py (steps and checks), stack.py (stack scanner); outputs go to coder/briefs/ (not committed)
 core.py               shared runner: role, tool limits, session, budget, approval prompt, injection scan
 sdlc.py               the SDLC pipeline and review-fix mode
 docs/architect/       the 12 step prompts and _rules.md, the rules shared by every step (these are code: the agent reads them)
@@ -152,7 +163,7 @@ docs/architect/samples/  made-up client documents and a sample technology catalo
 tests/                all tests, kept apart from the code (pytest.ini sets the paths)
   test_architect.py, test_baseline.py, test_sdlc.py   unit tests
   test_acceptance.py    one test group per acceptance case (see below)
-  test_coder.py         coding agent tests
+  test_coder.py, test_stack.py   coding agent and stack scanner tests
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
