@@ -133,7 +133,7 @@ def test_tech_lead_and_ticket_owner_sign_separately_and_a_refusal_restarts(tmp_p
 
 from architect import baseline  # noqa: E402
 
-PLAN = "## Status\nDraft\n## Implementation plan\n| S1 | a | x.py | AC1 |\n| S2 | b | y.py | AC2 |\n"
+PLAN = "## Status\nDraft\n## Acceptance criteria\n| AC1 | a |\n| AC2 | b |\n## Implementation plan\n| S1 | a | x.py | AC1 |\n| S2 | b | y.py | AC2 |\n"
 INSPECTED = ("## Status\nDraft\n## Plan check\n| S1 | `src/app.py:3` | reuse | None | e | Confirmed |\n"
              "| S2 | new: `src/new.py` | - | None | e | Confirmed |\n")
 
@@ -329,3 +329,120 @@ def test_detect_needs_only_the_tech_lead_and_keeps_old_profiles(tmp_path, monkey
     agent.detect([], str(repo))
     assert asked == [agent.TECH]
     assert [p.read_text() for p in (tmp_path / "briefs/history").glob("stack-profile.*")] == ["OLD PROFILE"]
+
+
+# ---- step 4: plan the change -----------------------------------------------------------------------------------
+
+def _change_plan(changes=(("C1", "`src/app.py`", "AC1", "S"), ("C2", "new: `src/out.py`", "AC2", "M")),
+                 amap=(("AC1", "C1"), ("AC2", "C2"))):
+    rows = "\n".join(f"| {c} | do it | {f} | `src/app.py:1` | {ac} | {size} | none | a test |" for c, f, ac, size in changes)
+    maprows = "\n".join(f"| {a} | crit | {c} | a test | Covered |" for a, c in amap)
+    return ("## Status\nDraft\n## Change set\n| ID | change | files | what | AC | size | depends | verified |\n|---|---|---|---|---|---|---|---|\n"
+            f"{rows}\n## Acceptance criteria map\n| AC | criterion | changes | test | status |\n|---|---|---|---|---|\n"
+            f"{maprows}\n")
+
+
+def _plan_env(tmp_path, monkeypatch, reply=None, approve=lambda who: True):
+    """Approved ticket plan, inspection and stack profile; a repo with src/app.py."""
+    repo, prompts = _detect_env(tmp_path, monkeypatch, reply=reply or _change_plan(), approve=approve)
+    briefs = tmp_path / "briefs"
+    (briefs / "stack-profile.md").write_text("STACK PROFILE")
+    baseline.log_approval(briefs, "detect", briefs / "stack-profile.md", agent.TECH)
+    return repo, prompts
+
+
+def test_plan_prompt_demands_small_bounded_traceable_changes_and_every_concern():
+    u = txt("plan.md")
+    for part in ("Break the work into SMALL changes", "Never write an L: split it", "no more than 12 changes",
+                 "Every change serves at least one acceptance criterion", "Enabling", "Not coverable",
+                 "Search for callers", "Data models and migrations", "Never put a secret in the plan",
+                 "Backward compatibility", "ONE ROW FOR EVERY change", "ONE ROW FOR EVERY acceptance criterion",
+                 "must exist in the repository, or be marked `new:`", "Do not run or claim to run anything"):
+        assert part in u
+    for title in ("Scope and bounds", "Change set", "Acceptance criteria map", "Affected files",
+                  "Interfaces and contracts", "Data models and migrations", "Configuration and environment",
+                  "Backward compatibility", "Order and rollback", "Out of scope"):
+        assert f"## {title}" in u
+
+
+def test_plan_needs_all_three_earlier_outputs_approved_and_unedited(tmp_path, monkeypatch):
+    repo, prompts = _detect_env(tmp_path, monkeypatch)  # no stack profile yet
+    with pytest.raises(SystemExit) as e:
+        agent.plan([], None)
+    assert "--repo" in str(e.value)
+    with pytest.raises(SystemExit) as e:
+        agent.plan([], str(repo))
+    assert "stack-profile.md: not produced (run `detect`)" in str(e.value)
+    (tmp_path / "briefs/stack-profile.md").write_text("PROFILE")  # produced but never approved
+    with pytest.raises(SystemExit) as e:
+        agent.plan([], str(repo))
+    assert "stack-profile.md: not approved" in str(e.value)
+    baseline.log_approval(tmp_path / "briefs", "detect", tmp_path / "briefs/stack-profile.md", agent.TECH)
+    (tmp_path / "briefs/repository-inspection.md").write_text("INSPECTION, edited")
+    with pytest.raises(SystemExit) as e:
+        agent.plan([], str(repo))
+    assert "repository-inspection.md: edited after it was approved" in str(e.value) and prompts == []
+
+
+def test_plan_reads_the_plan_inspection_and_profile_and_the_repo(tmp_path, monkeypatch):
+    repo, prompts = _plan_env(tmp_path, monkeypatch)
+    agent.plan([], str(repo))
+    prompt = prompts[0][1]
+    for name in ("implementation-plan.md", "repository-inspection.md", "stack-profile.md"):
+        assert str(tmp_path / "briefs" / name) in prompt
+    assert f"Repository to read: {repo}" in prompt
+    assert (tmp_path / "briefs/change-plan.md").read_text() == _change_plan() and len(prompts) == 1
+
+
+def test_every_acceptance_criterion_must_map_to_a_change(tmp_path, monkeypatch):
+    replies = iter([_change_plan(amap=(("AC1", "C1"),)), _change_plan()])
+    repo, prompts = _plan_env(tmp_path, monkeypatch, reply=lambda p: next(replies))
+    agent.plan([], str(repo))
+    assert len(prompts) == 2 and "no change for AC2" in prompts[1][1]
+
+
+def test_an_unreachable_criterion_may_say_not_coverable_but_a_blank_mapping_may_not(tmp_path, monkeypatch):
+    ok = _change_plan(amap=(("AC1", "C1"), ("AC2", "Not coverable: needs Q3")))
+    repo, prompts = _plan_env(tmp_path, monkeypatch, reply=ok)
+    agent.plan([], str(repo))
+    assert len(prompts) == 1  # a stated "Not coverable" is honest, so no repair
+    assert agent.unmapped(tmp_path / "briefs", _change_plan(amap=(("AC1", "C1"), ("AC2", "")))) != ""
+
+
+def test_a_change_must_serve_a_criterion_or_be_declared_enabling(tmp_path, monkeypatch):
+    stray = _change_plan(changes=(("C1", "`src/app.py`", "AC1", "S"), ("C2", "`src/app.py`", "AC2", "S"),
+                                  ("C3", "`src/app.py`", "-", "S")))
+    replies = iter([stray, _change_plan()])
+    repo, prompts = _plan_env(tmp_path, monkeypatch, reply=lambda p: next(replies))
+    agent.plan([], str(repo))
+    assert len(prompts) == 2 and "C3 serve no acceptance criterion" in prompts[1][1]
+    assert agent.unbounded(_change_plan(changes=(("C1", "`src/app.py`", "AC1", "S"),
+                                                 ("C2", "`src/app.py`", "Enabling C1", "S")))) == ""
+
+
+def test_changes_must_be_small_and_sized_and_within_the_cap():
+    assert "rated L" in agent.unbounded(_change_plan(changes=(("C1", "`a`", "AC1", "L"),)))
+    assert "no size" in agent.unbounded(_change_plan(changes=(("C1", "`a`", "AC1", "-"),)))
+    many = tuple((f"C{i}", "`a`", "AC1", "S") for i in range(1, agent.MAX_CHANGES + 2))
+    assert f"has {agent.MAX_CHANGES + 1} changes" in agent.unbounded(_change_plan(changes=many))
+    assert agent.unbounded(_change_plan(changes=many[:agent.MAX_CHANGES])) == ""
+    assert "no rows" in agent.unbounded("## Change set\nnothing planned\n")
+
+
+def test_invented_files_in_a_change_plan_are_sent_back(tmp_path, monkeypatch):
+    bad = _change_plan(changes=(("C1", "`src/ghost.py`", "AC1", "S"), ("C2", "new: `src/out.py`", "AC2", "M")))
+    replies = iter([bad, _change_plan()])
+    repo, prompts = _plan_env(tmp_path, monkeypatch, reply=lambda p: next(replies))
+    agent.plan([], str(repo))
+    assert len(prompts) == 2 and "`src/ghost.py`" in prompts[1][1] and "src/out.py" not in prompts[1][1]
+
+
+def test_plan_needs_the_tech_lead_and_the_ticket_owner_separately(tmp_path, monkeypatch):
+    answers = iter([True, False, True, True])
+    asked = []
+    repo, prompts = _plan_env(tmp_path, monkeypatch, approve=lambda who: asked.append(who) or next(answers))
+    monkeypatch.setattr("builtins.input", lambda _: "split C2")
+    agent.plan([], str(repo))
+    assert asked == [agent.TECH, agent.OWNER, agent.TECH, agent.OWNER] and "split C2" in prompts[1][1]
+    assert baseline.signed_roles(tmp_path / "briefs", "change-plan.md",
+                                 baseline.sha256(tmp_path / "briefs/change-plan.md")) == [agent.TECH, agent.OWNER]

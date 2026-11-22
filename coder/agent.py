@@ -3,6 +3,7 @@
   python coder/agent.py understand TICKET [FILE...] [--repo PATH]   1. read the ticket, design and repo; plan
   python coder/agent.py inspect --repo PATH [FILE...]                2. inspect the repo; evidence-based plan
   python coder/agent.py detect --repo PATH [FILE...]                 3. detect the stack: manifests, CI, versions
+  python coder/agent.py plan --repo PATH [FILE...]                   4. bounded change plan: each AC mapped to changes
 TICKET is the approved ticket; FILEs are designs, standards or other inputs; PATH is the repository to work in.
 These steps only read: nothing is edited until a later step, and only after the plan is approved.
 """
@@ -35,8 +36,11 @@ STEPS = {
     "understand": ("understand.md", "implementation-plan.md", [TECH, OWNER], []),
     "inspect": ("inspect.md", "repository-inspection.md", [TECH], ["implementation-plan.md"]),
     "detect": ("detect.md", "stack-profile.md", [TECH], ["repository-inspection.md"]),
+    "plan": ("plan.md", "change-plan.md", [TECH, OWNER],
+             ["implementation-plan.md", "repository-inspection.md", "stack-profile.md"]),
 }
-NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect"}
+NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect", "plan"}
+MAX_CHANGES = 12  # a plan larger than this is split into a first slice and a follow-up ticket
 
 
 def section(text, title):
@@ -96,6 +100,43 @@ def nonexistent(text, repo):
             "updated document, same sections.") if bad else ""
 
 
+def section_rows(text, title):
+    """The table rows of a section as lists of cells (separator rows dropped)."""
+    rows = [l.strip() for l in section(text, title).splitlines() if l.strip().startswith("|")]
+    return [[c.strip() for c in r.strip("|").split("|")] for r in rows if not re.fullmatch(r"\|[\s:|-]+\|", r)]
+
+
+def unmapped(briefs, text):
+    """Step 4 check: every acceptance criterion of the ticket plan maps to a change C, or says Not coverable."""
+    plan = pathlib.Path(briefs) / "implementation-plan.md"
+    ids = _ids("AC", section(plan.read_text(), "Acceptance criteria")) if plan.exists() else []
+    rows = [" ".join(r) for r in section_rows(text, "Acceptance criteria map")]
+    gone = [i for i in ids if not any(re.search(rf"\b{i}\b", r) and (re.search(r"\bC\d+\b", r) or "not coverable" in r.lower())
+                                      for r in rows)]
+    return (f"The Acceptance criteria map has no change for {', '.join(gone)}. Map each to the changes C that deliver "
+            "it and the test that proves it, or write Not coverable with the reason. Reply with the complete updated "
+            "document, same sections.") if gone else ""
+
+
+def unbounded(text):
+    """Step 4 check: small changes, each tied to a criterion (or declared enabling), within the cap."""
+    rows = [r for r in section_rows(text, "Change set") if re.fullmatch(r"C\d+", r[0])]
+    if not rows:
+        return "The Change set has no rows C1, C2... Add them. Reply with the complete updated document, same sections."
+    fix, join = [], lambda rs: ", ".join(r[0] for r in rs)
+    if len(rows) > MAX_CHANGES:
+        fix.append(f"The Change set has {len(rows)} changes; the limit is {MAX_CHANGES}. Plan the first coherent slice "
+                   "that fits and move the rest to Out of scope as a follow-up ticket.")
+    if big := [r for r in rows if "L" in r]:
+        fix.append(f"{join(big)} are rated L. Split each into S or M changes.")
+    if nosize := [r for r in rows if not {"S", "M"} & set(r) and "L" not in r]:
+        fix.append(f"{join(nosize)} have no size. Rate each S or M.")
+    if orphan := [r for r in rows if not re.search(r"\bAC\d+\b", " ".join(r)) and "enabling" not in " ".join(r).lower()]:
+        fix.append(f"{join(orphan)} serve no acceptance criterion. Tie each to an AC, mark it Enabling and name the "
+                   "change it enables, or remove it.")
+    return ("\n".join(fix) + " Reply with the complete updated document, same sections.") if fix else ""
+
+
 def unprofiled(repo, text):
     """Step 3 check: every file the scanner found, and every unrecognised file type, must be accounted for."""
     if not repo:
@@ -109,6 +150,8 @@ def unprofiled(repo, text):
 CHECKS = {"understand": lambda briefs, text, repo: uncovered(text),
           "inspect": lambda briefs, text, repo: "\n".join(filter(None, [unchecked(briefs, text),
                                                                         nonexistent(text, repo)])),
+          "plan": lambda briefs, text, repo: "\n".join(filter(None, [unmapped(briefs, text), unbounded(text),
+                                                                     nonexistent(text, repo)])),
           "detect": lambda briefs, text, repo: "\n".join(filter(None, [unprofiled(repo, text),
                                                                        nonexistent(text, repo)]))}
 
@@ -186,6 +229,7 @@ def run_step(name, files, repo=None):
 def understand(files, repo=None): run_step("understand", files, repo)  # 1. read, find gaps, plan
 def inspect(files, repo): run_step("inspect", files, repo)             # 2. inspect the repository, evidence-based plan
 def detect(files, repo): run_step("detect", files, repo)               # 3. stack profile: manifests, CI, versions, commands
+def plan(files, repo): run_step("plan", files, repo)                   # 4. bounded change plan, every AC mapped to changes
 
 
 if __name__ == "__main__":

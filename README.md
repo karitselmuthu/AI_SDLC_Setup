@@ -108,11 +108,20 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 
 | 3 | `detect` | `--repo PATH` (reads the approved step 2 inspection itself) | `stack-profile.md` | Tech lead |
 
+| 4 | `plan` | `--repo PATH` (reads the three approved outputs above itself) | `change-plan.md` | Tech lead, ticket owner (each signs separately) |
+
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
 python coder/agent.py inspect --repo .
 python coder/agent.py detect --repo .
+python coder/agent.py plan --repo .
 ```
+
+Step 4 refuses to run until the ticket plan, the inspection and the stack profile are all approved, unedited and not stale. It breaks the
+work into **small changes** (each rated S or M, at most 12) with the files, functions, interfaces, data models and migrations, configuration
+and backward-compatibility concerns for each, plus the order and how each is rolled back. **Code checks enforce the bounds:** every
+acceptance criterion of the ticket must map to a change (or say "Not coverable" with the reason), every change must serve a criterion or be
+declared "Enabling", no change may be rated L, the plan may not exceed 12 changes, and every cited file must exist or be marked `new:`.
 
 Step 3 first runs a plain-code scanner (`coder/stack.py`) that finds the manifests, lockfiles, build files, framework configuration and CI
 definitions (including nested ones in a monorepo), counts languages, and lists file types it does not recognise. The model must read every
