@@ -104,9 +104,18 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 |---|---|---|---|---|
 | 1 | `understand` | The approved ticket, then any design or standards files, and `--repo PATH` | `implementation-plan.md` | Tech lead, ticket owner (each signs separately) |
 
+| 2 | `inspect` | `--repo PATH` (reads the approved step 1 plan itself) | `repository-inspection.md` | Tech lead |
+
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
+python coder/agent.py inspect --repo .
 ```
+
+Step 2 refuses to run until the step 1 plan is approved by both reviewers, unedited since, and not stale. It then reads the repository itself:
+structure, language and dependencies, build and test commands (read from configuration, never claimed as run), conventions, where tests live,
+and the code that calls and is called by what the plan touches. It gives every plan step a verdict (Confirmed, Changed or Blocked) and lists
+what the evidence changed. **Evidence is checked in code:** every backticked file path must exist in the repository or be marked `new:`, and
+every step of the first plan must have a row, or the draft is sent back once. A re-run keeps the old version in `coder/briefs/history/`.
 
 Step 1 reads the ticket, design and repository guidance (CLAUDE.md, README, CONTRIBUTING, test setup) and writes a short plan linked to the
 ticket. It lists every ambiguity, missing input and conflict as a numbered question with the criteria it blocks and the assumption it would
