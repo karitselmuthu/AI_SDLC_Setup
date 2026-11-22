@@ -238,6 +238,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_coder.py, test_stack.py, test_implement.py, test_tests_step.py   coding agent, stack scanner, implement and tests-step tests
   test_diffscan.py, test_handoff.py                                     diff scanner, review (step 7) and pull request (step 8)
   test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
+  test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
@@ -275,6 +276,32 @@ instruction is in the prompt and the tests prove it is there, but only a real ru
 | 16 | Approved handoff | Code: the baseline reads every artifact and must cover every requirement and follow-up |
 | 17 | Prompt injection | Code: pre-scan, warning, human approval outside the model, read-only tools. Prompt: documents are data |
 | 18 | Human approval gate | Code: each named reviewer signs separately; the model cannot claim "approved"; the handoff refuses until all have signed |
+
+### Coding agent acceptance cases (`tests/test_coder_acceptance.py`)
+
+One test per prepared case. Models are faked and repositories are real temporary git repos, so these prove what the code guarantees.
+
+| # | Case | What the code guarantees |
+|---|---|---|
+| 1 | Clear ticket and design | Edits are limited to the planned files; every change is bounded and traced to a criterion |
+| 2 | Ambiguous requirement | "Ready with assumptions" needs a recorded `Assumption`; a plan marked `Blocked` stops every later step and `implement` makes no edit |
+| 3 | Stack detection | The scanner and adapters find languages, frameworks and build tools from files; the build tool follows the lockfile |
+| 4 | Unsupported technology | Reported as unsupported; if no check can run, the report says "NOT run" and never "passed" |
+| 5 | Existing conventions | The prompt forbids unplanned dependencies; an unplanned manifest edit is reverted |
+| 6 | Criteria coverage | A criterion with no test, review or PR row is sent back; "Not met" stays visible |
+| 7 | Boundary and failure | Empty boundary or failure cells are sent back; removed, skipped or never-failing tests are flagged |
+| 8 | Multi-module repository | Every module needs a row in "Modules and dependent builds"; untouched modules are named and dependents are stated as not computed |
+| 9 | Dependency changes | A changed declaration without its lockfile is Should fix; the PR must explain each dependency and the validation limits |
+| 10 | Database or schema change | Migration and schema files are flagged; the PR must state compatibility and rollback |
+| 11 | Secrets | Key formats, secret files and logged credentials are flagged and masked; agents cannot touch `.env*` |
+| 12 | Test failure | The real output and exit code are recorded; deleted tests are flagged; a failure is never reported as passed |
+| 13 | Tool or environment failure | A missing tool, timeout or unreachable service is "could not run", not a test failure, and is never fed back to the model |
+| 14 | Scope control | Out-of-scope edits are reverted and reported; the tool refuses unlisted files |
+| 15 | PR readiness | Summary, results, criteria mapping, limitations, files and approvals are all present |
+| 16 | Untrusted content | Instructions in tickets and repository files are flagged as data; permissions come from the code |
+
+Limits: environment failure is a judgement from the exit code and output ("probable"); module dependents are not inferred from code;
+dependency changes are detected by line patterns, so a minified single-line manifest can be missed.
 
 ## Adding or changing a step
 

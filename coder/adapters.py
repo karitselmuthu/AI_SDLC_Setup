@@ -484,10 +484,9 @@ def summary(p, extra, ran, results, approved=True, overridden=False, files=()):
     """One sentence for the verdict: how much of the selected coverage did not run, and the gaps."""
     o = outcomes(p, extra, ran, results, approved, overridden)
     skipped, gaps, uns = sum(not x.startswith(("PASS", "FAIL")) for x in o), len(p["gaps"]), len(p["unsupported"])
-    if not (skipped or gaps or uns):
-        return ""
-    return (f" Coverage is not complete: {skipped} selected check(s) did not run, {gaps} gap(s), {uns} unsupported technolog"
-            f"{'y' if uns == 1 else 'ies'} (see Stack coverage).")
+    parts = [x for x in (f"{skipped} selected check(s) did not run" if skipped else "", f"{gaps} gap(s)" if gaps else "",
+                         f"{uns} unsupported technolog{'y' if uns == 1 else 'ies'}" if uns else "") if x]
+    return f" Coverage is not complete: {', '.join(parts)} (see Stack coverage)." if parts else ""
 
 
 def coverage(p, extra, ran, results, approved=True, overridden=False, files=()):
