@@ -283,3 +283,11 @@ def test_the_tech_lead_and_ticket_owner_sign_separately_and_can_send_it_back(tmp
     monkeypatch.setattr("builtins.input", lambda _: "explain the rollback")
     agent.pr([], str(repo))
     assert asked == [agent.TECH, agent.OWNER, agent.TECH, agent.OWNER] and "explain the rollback" in calls[1][1]
+
+
+def test_the_verdict_line_counts_should_fix_items_from_the_scan_and_the_model(tmp_path, monkeypatch, repo):
+    (repo / "src/app.py").write_text("x = 2\nrequests.get(u, verify=False)\n")  # scan: one Should fix
+    row = "| F1 | Should fix | `src/app.py:1` | w | y | z |\n| F2 | Nit | `src/app.py:1` | w | y | z |"
+    _env(tmp_path, monkeypatch, lambda p: review_reply(p, findings="| ID | sev | where | what | why | fix |\n|---|---|---|---|---|---|\n" + row))
+    agent.review([], str(repo))
+    assert "**No blockers found. Ready for human review. 2 should-fix item(s) for the reviewer to read first.**" in _rep(tmp_path)

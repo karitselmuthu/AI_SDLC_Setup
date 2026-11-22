@@ -531,8 +531,11 @@ def build_review_report(repo, branch, diff, found, model_blockers, reply):
     adds = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
     dels = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
     nfiles = len(set(re.findall(r"(?m)^diff --git a/\S+ b/(\S+)", diff)))
+    should = (sum(f["severity"] == "Should fix" for f in found)
+              + sum(len(r) > 1 and r[1].strip() == "Should fix" for r in section_rows(reply, "Findings")))
+    note = f" {should} should-fix item(s) for the reviewer to read first." if should else ""
     verdict = (f"Not ready for human review: {len(blockers) + len(model_blockers)} blocker(s)." if blockers or model_blockers
-               else "No blockers found. Ready for human review.")
+               else "No blockers found. Ready for human review.") + note
     rows = "\n".join(f"| {f['id']} | {f['severity']} | {f['kind']} | `{f['file']}`{':' + str(f['line']) if f['line'] else ''} | "
                      f"{f['text'].replace('|', '/')} | {f['why']} |" for f in found) or "| none | | | | | |"
     parts = [
