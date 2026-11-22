@@ -19,13 +19,14 @@ DOCS = {
     "STEP 4": "## Status\nDraft.\n## Test cases\n" + TABLE(["ID", "AC", "Kind", "Preconditions", "Steps", "Expected", "Data"],
               [["TC1", "AC1", "positive", "-", "add(1,2)", "3", "1,2"], ["TC2", "AC1", "boundary", "-", "add(0,0)", "0", "0,0"],
                ["TC3", "AC2", "positive", "-", "add(1,2)", "ok", "1,2"], ["TC4", "AC2", "negative", "-", "add('a',1)", "TypeError", "a,1"]])
+              + "## Boundary inputs considered\n" + TABLE(["Input", "Covered by"], [[b, "TC2" if b == "minimum" else "Not relevant: numbers only"] for b in Q.BOUNDARIES])
               + "## Test data\nInvented numbers only.\n",
     "STEP 5": "## Status\nDraft.\n## Test case to automated test\n" + TABLE(["TC", "Test"], [[f"TC{i}", f"tests/test_qa.py::t{i}"] for i in (1, 2, 3, 4)]),
     "STEP 7": "## Status\nDraft.\n## Exploratory findings\n" + TABLE(["ID", "Finding"], [["E1", "see `src/app.py`"]]) + "## Regression assessment\n" + TABLE(["Area", "Gap"], [["`src/app.py`", "none"]]),
     "STEP 8": "## Status\nDraft.\n## Non-functional quality\n" + TABLE(["Dimension", "Threshold", "Status"],
               [[d, "Not stated", "Gap" if d == "Performance" else "Not applicable"] for d in Q.DIMENSIONS]),
     "STEP 9": "## Status\nDraft.\n## Failing checks\n" + TABLE(["X", "Class"], [["X1", "product defect"]]) + "## Defects\n"
-              + TABLE(["ID", "Title", "Severity", "Status"], [["DEF1", "bad sum", "High", "Open"]]) + "## Re-test\nNo fix provided yet\n",
+              + TABLE(["ID", "Title", "Severity", "Confidence", "Steps", "Expected", "Actual", "Status"], [["DEF1", "bad sum", "High", "Confirmed", "add(1,2)", "3", "0", "Open"]]) + "## Re-test\nNo fix provided yet\n",
 }
 
 

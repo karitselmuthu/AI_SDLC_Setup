@@ -245,6 +245,8 @@ python qa/agent.py scope TICKET [FILE...] --repo PATH     # then risk, coverage,
 Facts come from code (counts, results, the verdict). QA cannot approve its own findings (a developer approves the defect report too), edits test
 files only, and a model that writes "approved for release" is sent back. A person makes the release decision. The web page shows it as a third track.
 
+Acceptance: `tests/test_qa_acceptance.py` has one test for each of the 18 QA cases (complete criteria, ambiguity, high risk, boundaries, roles, API, migration, cross-stack, regression, flaky, environment, privacy, security finding, unsupported stack, defect reproduction, fix retest, report integrity, untrusted input). A failing check is re-run twice and every attempt is recorded: fail then pass is FLAKY, never PASS.
+
 ## Web page
 
 ```bash
@@ -296,6 +298,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
   test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
   test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
+  test_qa_acceptance.py                                                 the 18 QA acceptance cases
   test_qa.py                                                            the QA agent: ten steps, test-only edits, code-derived verdict
   test_web.py                                                           the web page: projects, status, approvals, security
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
