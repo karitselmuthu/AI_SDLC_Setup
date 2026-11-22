@@ -287,8 +287,13 @@ TEST_NAMES = ("test_*.py", "*_test.py", "*.test.*", "*.spec.*", "conftest.py")
 TEST_GLOBS = ["tests/**", "test/**", "__tests__/**", "spec/**", "specs/**", "**/test_*.py", "**/*_test.py",
               "**/*.test.*", "**/*.spec.*", "**/conftest.py", "**/fixtures/**", "**/testdata/**"]
 MAX_FIX = 3  # how many times failing checks are fed back to the model before a human decides
-CHECK_WORDS = re.compile(r"(?i)\b(test|tests|lint|linter|type|typecheck|mypy|check|format|ruff|flake8|pylint|eslint|"
-                         r"tsc|pytest|jest|vitest|unittest)\b")
+CHECK_WORDS = re.compile(r"(?i)\b(test|tests|lint|linter|type|typecheck|check|format|verify)\b")  # in the PURPOSE column
+# only recognised check runners are ever run automatically; a command that merely mentions one (for example
+# `python sdlc.py ... --test "pytest -q"`, which launches a whole pipeline) is not a check
+RUNNERS = re.compile(r"(?i)^(python3? -m )?(pytest|unittest|tox|nox|ruff|flake8|pylint|mypy|pyright|black|isort|coverage)\b"
+                     r"|^(npm|yarn|pnpm|bun)( run)? (test|lint|typecheck|check|format:check)\b"
+                     r"|^(\./)?(mvn|mvnw|gradle|gradlew)\b.*\b(test|check|verify)\b|^(go|cargo|dotnet|swift) (test|vet|clippy|check)\b"
+                     r"|^make (test|tests|check|lint)\b|^(eslint|tsc|jest|vitest|rubocop|phpunit|golangci-lint)\b")
 # never run these automatically, even if a document lists them: installs, publishing, deletion, network, shell tricks
 UNSAFE = re.compile(r"(?i)(\binstall\b|\bdeploy\b|\bpublish\b|\bpush\b|\brm\b|\bsudo\b|\bcurl\b|\bwget\b|\bdocker\b"
                     r"|\bkubectl\b|\bterraform\b|\bpip\b|\bgit\b|[;&|><`$]|\bnpm (i|ci)\b|\byarn add\b)")
@@ -314,7 +319,7 @@ def check_commands(briefs):
     for r in rows:
         if len(r) > 1 and r[0].lower() != "purpose":
             cmd = r[1].strip().strip("`").strip()
-            if (cmd and not PLACEHOLDER.match(cmd) and CHECK_WORDS.search(r[0] + " " + cmd)
+            if (cmd and not PLACEHOLDER.match(cmd) and CHECK_WORDS.search(r[0]) and RUNNERS.match(cmd)
                     and not UNSAFE.search(cmd) and cmd not in cmds):
                 cmds.append(cmd)
     return cmds
@@ -408,7 +413,8 @@ def build_tests_report(repo, branch, commands, ran, base_res, runs, files, diff,
     if bad_now - bad_before:
         cmp_lines.append("New failures (passed before the test changes): " + ", ".join(f"`{c}`" for c in sorted(bad_now - bad_before)))
     if bad_now & bad_before:
-        cmp_lines.append("Failures that were already there before the test changes: " + ", ".join(f"`{c}`" for c in sorted(bad_now & bad_before)))
+        cmp_lines.append("Failures that were already there before the test changes: " + ", ".join(f"`{c}`" for c in sorted(bad_now & bad_before))
+                         + ". They were not fed back to the model, which cannot have caused or fixed them. Check whether any new test is among them.")
     counts = "\n".join(
         f"| `{n}` | {'new' if _original(repo, n, {}) is None else 'updated'} | "
         f"{sum(1 for l in diff_for(diff, n) if l.startswith('+') and not l.startswith('+++'))} | "
@@ -630,17 +636,21 @@ def run_tests(repo, checks=None):
     def failing(results):
         return [r for r in results if r["rc"] != 0]
 
+    already = {r["cmd"] for r in base_res if r["rc"] != 0}
+
+    def new_failures(results):  # only what the model's changes could have caused is worth another attempt
+        return [r for r in failing(results) if r["cmd"] not in already]
+
     reply = call(head + common)
     if gap := "\n".join(filter(None, [untested(briefs, reply), claims_qa(reply), false_approval(None, reply)])):
         reply = call(gap)
     runs = [run_checks(repo, commands)] if ran else []
     for _ in range(MAX_FIX):
-        if not runs or not failing(runs[-1]):
+        if not runs or not new_failures(runs[-1]):
             break
-        was = {r["cmd"] for r in base_res if r["rc"] != 0}
         reply = call("These local checks FAILED after your test changes (real output from the system):\n\n"
-                     + "\n\n".join(f"$ {r['cmd']}  (exit {r['rc']}; {'already failing before your changes' if r['cmd'] in was else 'passed before your changes'})\n{r['tail']}"
-                                   for r in failing(runs[-1]))
+                     + "\n\n".join(f"$ {r['cmd']}  (exit {r['rc']}; passed before your changes)\n{r['tail']}"
+                                   for r in new_failures(runs[-1]))
                      + "\n\nFix the TESTS only. If production code looks wrong, do not edit it: reply 'Production defect "
                        "suspected:' with the evidence. Reply with the same four sections as before.")
         runs.append(run_checks(repo, commands))

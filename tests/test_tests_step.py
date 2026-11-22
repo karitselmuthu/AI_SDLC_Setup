@@ -117,8 +117,11 @@ def test_check_commands_come_from_the_stack_profile_and_skip_unsafe_ones():
         "| Install | `pip install -r requirements.txt` | x |\n| Install deps | `yarn install --frozen-lockfile` | x |\n"
         "| Deploy | `make deploy` | x |\n| Test in docker | `docker run app test` | x |\n"
         "| Test and clean | `pytest && rm -rf build` | x |\n| Lint, piped | `ruff check . | tee out` | x |\n"
-        "| Build, lint, format | Not stated. | none |\n| Run the app | `python app.py` | x |\n| Test again | `pytest -q` | x |\n")
-    assert agent.check_commands(d) == ["pytest -q", "ruff check .", "mypy src"]
+        "| Build, lint, format | Not stated. | none |\n| Run the app | `python app.py` | x |\n| Test again | `pytest -q` | x |\n"
+        "| Run the pipeline | `python sdlc.py \"issue\" --test \"pytest -q\"` | x |\n"
+        "| Run tests through the pipeline | `python sdlc.py \"issue\" --test \"pytest -q\"` | x |\n"
+        "| JS tests | `yarn test` | x |\n| Go tests | `go test ./...` | x |\n| Run tests | `./deploy.sh test` | x |\n")
+    assert agent.check_commands(d) == ["pytest -q", "ruff check .", "mypy src", "yarn test", "go test ./..."]
     assert agent.check_commands(tmp := pathlib.Path(tempfile.mkdtemp())) == [] and tmp.exists()
 
 
@@ -150,22 +153,33 @@ def test_the_system_runs_the_approved_checks_before_and_after_and_records_real_r
 
 
 def test_failing_checks_go_back_to_the_model_for_a_test_fix_and_the_loop_ends(tmp_path, monkeypatch, repo):
-    calls, _ = _env(tmp_path, monkeypatch, repo, edits={"fix": lambda: _write(repo, "tests/test_new.py", "def test_n(): pass\n")})
-    agent.tests([], str(repo), ["test -f tests/test_new.py"])
-    keys = [c[1] for c in calls]
-    assert keys == ["write", "fix"]
+    flag = repo / "tests/test_flag.py"
+    calls, _ = _env(tmp_path, monkeypatch, repo, edits={"write": lambda: _write(repo, "tests/test_flag.py", "x = 1\n"),
+                                                        "fix": lambda: flag.unlink()})
+    agent.tests([], str(repo), ["test ! -f tests/test_flag.py"])  # passes before; fails after the write; fixed by the fix
+    assert [c[1] for c in calls] == ["write", "fix"]
     fix = calls[1][2]
-    assert "$ test -f tests/test_new.py  (exit 1; " in fix and "Fix the TESTS only" in fix and "Production defect suspected" in fix
-    assert "All 1 local checks passed after" not in _report(tmp_path) and "Run 1:" in _report(tmp_path) and "Run 2:" in _report(tmp_path)
+    assert "$ test ! -f tests/test_flag.py  (exit 1; passed before your changes)" in fix
+    assert "Fix the TESTS only" in fix and "Production defect suspected" in fix
+    rep = _report(tmp_path)
+    assert "Run 1:" in rep and "Run 2:" in rep and "All 1 local checks passed" in rep
 
 
 def test_the_fix_loop_is_capped_and_a_human_still_decides(tmp_path, monkeypatch, repo):
-    calls, asked = _env(tmp_path, monkeypatch, repo)
-    agent.tests([], str(repo), ["false"])
+    calls, asked = _env(tmp_path, monkeypatch, repo, edits={"write": lambda: _write(repo, "tests/test_flag.py", "x = 1\n")})
+    agent.tests([], str(repo), ["test ! -f tests/test_flag.py"])  # passes before; the model's file makes it fail and stay failing
     assert [c[1] for c in calls].count("fix") == agent.MAX_FIX
-    rep = _report(tmp_path)
-    assert "1 of 1 local checks FAILED" in rep and "Failures that were already there before" in rep
+    assert "1 of 1 local checks FAILED" in _report(tmp_path)
     assert asked[-1] == agent.TECH  # a failing result is shown to the tech lead, never hidden or auto-approved
+
+
+def test_a_failure_that_was_already_there_is_reported_but_not_fed_back(tmp_path, monkeypatch, repo):
+    calls, asked = _env(tmp_path, monkeypatch, repo)
+    agent.tests([], str(repo), ["false"])  # fails before the model does anything
+    assert [c[1] for c in calls] == ["write"]  # no fix attempts: the model cannot have caused or fixed it
+    rep = _report(tmp_path)
+    assert "Failures that were already there before the test changes: `false`" in rep and "not fed back" in rep
+    assert "1 of 1 local checks FAILED" in rep and asked[-1] == agent.TECH
 
 
 def test_new_failures_are_told_apart_from_old_ones(tmp_path, monkeypatch, repo):

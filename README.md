@@ -140,10 +140,10 @@ reported. The prompt demands normal, boundary and failure cases for every accept
 randomness), no weakening, deleting or skipping of existing tests, and "Production defect suspected" instead of fixing code. A code check
 requires a complete test matrix row for every criterion.
 
-**The code, not the model, runs the checks** (the agent has no shell). The commands come from the approved stack profile (test, lint and type
-commands only; installs, deploys, network, git, `rm` and shell chaining are filtered out) or from `--check CMD`, and the tech lead approves the
+**The code, not the model, runs the checks** (the agent has no shell). The commands come from the approved stack profile (only recognised check
+runners such as `pytest`, `ruff`, `mypy`, `yarn test`, `go test` or `make test`, matched on the command itself; a command that merely mentions one, like a script that launches a pipeline, is never run; installs, deploys, network, git, `rm` and shell chaining are filtered out) or from `--check CMD`, and the tech lead approves the
 list before anything runs. The checks run once before the model edits (a baseline) and again after, so new failures are told apart from ones that were
-already there. Failing output is fed back to the model to fix the tests, at most 3 times, and then a human decides. Failures, timeouts and "not run"
+already there. Failing output from a check that **passed before** is fed back to the model to fix the tests, at most 3 times, and then a human decides; a check that was already failing is reported but not fed back, since the model cannot have caused it. Failures, timeouts and "not run"
 are recorded as they are, never hidden. The report is stamped **"development verification, not independent QA sign-off"**, and a claim of QA
 sign-off by the model is removed. A scan flags removed or weakened assertions, removed tests, and added skips for the reviewer.
 
