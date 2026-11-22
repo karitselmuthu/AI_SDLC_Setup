@@ -8,9 +8,11 @@
   python coder/agent.py tests --repo PATH [--check CMD]...           6. developer tests, then run the local checks
   python coder/agent.py review --repo PATH                           7. review the whole diff before handoff
   python coder/agent.py pr --repo PATH                               8. prepare the pull request description
+  python coder/agent.py handoff --repo PATH [--no-decision]          9. human handoff package; the reviewer decides
 Steps 1-4 only read. Step 5 edits, one planned change at a time, only the files that change lists, on a new branch.
 Step 6 edits test files only, on that same branch, and the code (not the model) runs the repository's local checks.
 Steps 7 and 8 only read. They never push and never open the pull request: they print the commands for a human to run.
+Step 9 calls no model: it assembles the reviewer's package from the approved records and git. The reviewer makes the merge decision.
 TICKET is the approved ticket; FILEs are designs, standards or other inputs; PATH is the repository to work in.
 """
 import pathlib
@@ -30,7 +32,7 @@ sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a scr
 import core  # noqa: E402
 from core import approve, ask, flagged, false_approval  # noqa: E402
 from architect import baseline  # noqa: E402
-from coder import adapters, diffscan, stack  # noqa: E402  (the generic approval ledger: log_approval and problems)
+from coder import adapters, diffscan, handoff, stack  # noqa: E402  (the generic approval ledger: log_approval and problems)
 
 core.AGENTS["coder"] = dict(
     role="You are the Coding Agent. In these steps you only read and plan: never edit files, run commands or write "
@@ -71,8 +73,9 @@ STEPS = {
     "tests": ("tests.md", "test-report.md", [TECH], ["implementation-report.md"]),  # test files only; code runs checks
     "review": ("review.md", "review-report.md", [TECH], ["implementation-report.md", "test-report.md"]),
     "pr": ("pr.md", "pull-request.md", [TECH, OWNER], ["review-report.md"]),
+    "handoff": ("-", "handoff-package.md", [handoff.REVIEWER], ["pull-request.md"]),  # no prompt: built from records, no model call
 }
-NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect", "plan", "implement", "tests", "review", "pr"}
+NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect", "plan", "implement", "tests", "review", "pr", "handoff"}
 MAX_CHANGES = 12  # a plan larger than this is split into a first slice and a follow-up ticket
 
 
@@ -937,6 +940,63 @@ def run_review(repo):
     print("wrote:", out)
 
 
+def changed_table(repo, diff, names):
+    """(path, kind, lines added, lines removed) for each changed file, counted from the diff."""
+    added = {}
+    for f, _, _ in diffscan.parse_diff(diff):
+        added[f] = added.get(f, 0) + 1
+    removed = {}
+    for line in git(repo, "diff", "--numstat", "HEAD")[1].splitlines():
+        a, d, f = (line.split("\t") + ["", "", ""])[:3]
+        removed[f] = int(d) if d.isdigit() else 0
+    return [(f, "test" if is_test_path(f) else "production", added.get(f, 0), removed.get(f, 0)) for f in sorted(names)]
+
+
+def run_handoff(repo, decide=True):
+    """Step 9. No model. Everything in the package comes from the approved records and from git; the reviewer decides."""
+    name = "handoff"
+    template, out_name, reviewers, prior = STEPS[name]
+    briefs, repo, branch, impl_report = work_context(name, repo)
+    bad = baseline.problems(briefs, {k: v for k, v in STEPS.items() if k != name})  # the WHOLE chain, not only the last step
+    if bad:
+        sys.exit(f"Cannot {name} yet. Every earlier output must be approved, unedited and current:\n  " + "\n  ".join(bad))
+    read = lambda f: (briefs / f).read_text()  # noqa: E731
+    review, tests, pr, plan, change_plan = (read(f) for f in ("review-report.md", "test-report.md", "pull-request.md",
+                                                              "implementation-plan.md", "change-plan.md"))
+    tracked, new, _ = work_files(repo, [impl_report, tests])
+    diff = work_diff(repo, new)
+    if not (briefs / "change.diff").exists() or handoff.sha(diff) != handoff.sha(read("change.diff")):
+        sys.exit(f"{name}: the working tree changed since the review (its diff no longer matches change.diff). Re-run `review` and `pr` "
+                 "so the reviewer sees what will actually be merged.")
+    ledger = baseline.latest(briefs)
+    docs = [(f, ledger[f]["sha256"][:12], ", ".join(r.split(" (")[0] for r in baseline.signed_roles(briefs, f, ledger[f]["sha256"])))
+            for f in ("implementation-plan.md", "repository-inspection.md", "stack-profile.md", "change-plan.md", "implementation-report.md",
+                      "test-report.md", "review-report.md", "pull-request.md") if f in ledger]
+    ticket = re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", section(plan, "Ticket summary") or plan)
+    url = re.search(r"https?://[^\s)>\]]+", plan)
+    title = next((l[2:].strip() for l in pr.splitlines() if l.startswith("# ")), "(no title)")
+    head = git(repo, "rev-parse", "HEAD")[1]
+    text, iss = handoff.build(dict(title=title, ticket_id=ticket.group(0) if ticket else None, ticket_url=url.group(0) if url else None,
+                                   branch=branch, head=head, repo=repo, plan=plan, change_plan=change_plan, tests=tests, review=review, pr=pr,
+                                   files=changed_table(repo, diff, tracked | new), diff_sha=handoff.sha(diff), docs=docs))
+    out = briefs / out_name
+    if out.exists() and out.read_text() != text:  # a re-run never destroys the old package
+        old = briefs / "history" / f"{out.stem}.{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.md"
+        old.parent.mkdir(exist_ok=True)
+        shutil.copy2(out, old)
+    out.write_text(text)
+    print("wrote:", out)
+    print(handoff.counts_line(iss))
+    if not decide:
+        print("Reviewer decision not asked (--no-decision). Nothing was approved.")
+        return
+    d, rec = handoff.decide(briefs, out, branch, head, iss)
+    if d == "approve":
+        baseline.log_approval(briefs, name, out, handoff.REVIEWER)
+    print(f"Reviewer decision: {rec['decision']} by {rec['reviewer']} (recorded; the agent has not merged anything)." if rec else
+          "No reviewer decision recorded.")
+
+
 def run_pr(repo):
     """Step 8. Read-only. The model writes the explaining sections; the code adds everything that must be factual."""
     name = "pr"
@@ -1033,6 +1093,7 @@ def implement(files, repo): run_implement(repo)                       # 5. edit 
 def tests(files, repo, checks=None): run_tests(repo, checks)          # 6. developer tests, then run the local checks
 def review(files, repo): run_review(repo)                             # 7. review the whole diff before handoff
 def pr(files, repo): run_pr(repo)                                     # 8. prepare the pull request description
+def handoff_step(files, repo, decide=True): run_handoff(repo, decide) # 9. human handoff package; the reviewer decides
 
 
 if __name__ == "__main__":
@@ -1042,6 +1103,9 @@ if __name__ == "__main__":
         i = args.index("--check")
         checks.append(args[i + 1])
         del args[i:i + 2]
+    no_decision = "--no-decision" in args
+    if no_decision:
+        args.remove("--no-decision")
     repo = args.pop(args.index("--repo") + 1) if "--repo" in args else None
     if "--repo" in args:
         args.remove("--repo")
@@ -1056,5 +1120,7 @@ if __name__ == "__main__":
         run_review(repo)
     elif cmd == "pr":
         run_pr(repo)
+    elif cmd == "handoff":
+        run_handoff(repo, not no_decision)
     else:
         run_step(cmd, files, repo)

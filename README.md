@@ -115,6 +115,7 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 | 6 | `tests` | `--repo PATH` (on the branch step 5 created), optional `--check CMD` | `test-report.md`, plus test edits on that branch | Tech lead |
 | 7 | `review` | `--repo PATH` (same branch) | `review-report.md`, `change.diff` | Tech lead |
 | 8 | `pr` | `--repo PATH` (same branch) | `pull-request.md` | Tech lead, ticket owner |
+| 9 | `handoff` | `--repo PATH` (same branch), optional `--no-decision` | `handoff-package.md`, `handoff-decisions.log` | Reviewer (merge decision) |
 
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
@@ -157,6 +158,20 @@ Step 8 needs the review approved and not stale. The model writes only the title,
 and migration notes (checked: title length, a row per criterion, migration section present, no secrets, no approval or QA claims). Code adds the
 ticket link (or says it is not stated), the files changed with line counts from git, the real check results, the review outcome with its limitations and
 open questions, the approved source documents with content hashes and approvers, and a reviewer checklist. Nothing factual is left to the model.
+
+**Step 9 is the human handoff (`coder/handoff.py`), and it calls no model.** The agent prepares the code and the evidence; **the reviewer makes
+the merge decision**. The package (`handoff-package.md`) is assembled only from the approved records and from git, so nothing in it can be
+embellished: the ticket and its link, the implementation plan and planned changes, the changed files with line counts, the acceptance criteria
+mapping with any criterion not fully met, the tests run and their real results, the checks that were **not** run (and why), the coverage gaps and
+unsupported technologies, the known risks, the self-review's should-fix items, limitations and remaining questions, and a table of every approved
+document with its hash and approvers. It states what the agent did and did not do (no commit, push, pull request or merge).
+
+Gates: the **whole** chain (not only the last step) must be approved, unedited and current, the repository must be on the implementation branch,
+and the working tree must still match the diff the review saw (`change.diff`), so the reviewer sees what will actually be merged. The package says
+"Not ready to merge" when it records a blocker or a failing check. The reviewer's decision (approve, changes or reject) is asked at the end and can
+**only be recorded by a person at a terminal**: a script or a piped answer records nothing. It needs the reviewer's name, and a written reason for
+changes, reject, or an approval that accepts known open items. It is appended to `handoff-decisions.log` with the package hash and
+`merged_by_agent: false`, and only an approval is added to the approvals ledger. `--no-decision` writes the package and asks nothing.
 
 **Stack adapters (`coder/adapters.py`) select the checks, not a fixed "all technologies" list.** Plain code detects what the repository actually
 uses from its files (never from the model) and offers only that technology's own checks, in check mode: it covers web frontend
@@ -239,6 +254,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_diffscan.py, test_handoff.py                                     diff scanner, review (step 7) and pull request (step 8)
   test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
   test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
+  test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
