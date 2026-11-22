@@ -82,6 +82,33 @@ def test_rerunning_the_dependent_clears_staleness(tmp_path):
     assert baseline.problems(briefs, STEPS) == []
 
 
+ROLES = {"s": ("s.md", "s.md", ["Account lead", "Delivery lead", "Architecture lead"], [])}  # needs all three
+
+
+def test_every_required_role_must_approve_the_current_content(tmp_path):
+    briefs = tmp_path
+    (briefs / "s.md").write_text("v1")
+    baseline.log_approval(briefs, "s", briefs / "s.md", "Account lead")
+    baseline.log_approval(briefs, "s", briefs / "s.md", "Delivery lead")
+    assert baseline.problems(briefs, ROLES) == ["s.md: awaiting sign-off from Architecture lead (run `s`)"]
+    baseline.log_approval(briefs, "s", briefs / "s.md", "Architecture lead")
+    assert baseline.problems(briefs, ROLES) == []
+    (briefs / "s.md").write_text("v2")  # new content: earlier sign-offs on v1 no longer count
+    assert baseline.problems(briefs, ROLES) == ["s.md: edited after it was approved (re-run `s`)"]
+    baseline.log_approval(briefs, "s", briefs / "s.md", "Account lead")
+    assert len(baseline.problems(briefs, ROLES)) == 2  # still awaiting Delivery and Architecture on v2
+
+
+def test_manifest_lists_every_signer_and_says_approved(tmp_path):
+    briefs = _approved(tmp_path)
+    for role in ("Delivery lead", "Architecture lead"):
+        baseline.log_approval(briefs, "handoff", briefs / "handoff.md", role)
+    dest = baseline.package(briefs, tmp_path / "baseline", STEPS, "handoff.md", 1, [])
+    m = json.loads((dest / "manifest.json").read_text())
+    assert m["status"] == "approved"
+    assert m["artifacts"][-1]["approved_by"] == "handoff-lead, Delivery lead, Architecture lead"
+
+
 def test_version_numbers_and_previous_doc(tmp_path):
     base = tmp_path / "baseline"
     assert baseline.next_version(base) == 1

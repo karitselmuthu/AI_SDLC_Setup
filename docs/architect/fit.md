@@ -21,7 +21,7 @@ Reply in markdown with exactly these sections:
 ## Scope and basis (design version assessed, documents used, expected inputs NOT supplied)
 ## Standards and constraints inventory (table: ID S1... | standard or constraint | category: approved platform / security / data residency / regulatory / accessibility / contract-service / procurement-change | mandatory or advisory | source)
 ## Fit assessment (table with ONE ROW FOR EVERY design component K and interface I in the target architecture: element | applicable standards (S ids) | verdict | evidence | note)
-## Approved platforms and technology
+## Approved platforms and technology (check each component's technology against the approved catalog and standards. Anything not covered is Unsupported: say what cannot be assessed and why, and name the specialist review required. A client-mandated technology is a constraint: assess its fit and risks and list an exception if it breaks a standard, and never replace it silently)
 ## Security policy
 ## Data residency
 ## Regulatory and privacy (questions for compliance/legal, not conclusions)

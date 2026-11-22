@@ -33,10 +33,18 @@ def latest(briefs):
     return recs
 
 
+def signed_roles(briefs, file, sha):
+    """Reviewers (in the order they signed) who approved exactly this content of this file."""
+    log = pathlib.Path(briefs) / "approvals.log"
+    recs = [json.loads(line) for line in log.read_text().splitlines() if line.strip()] if log.exists() else []
+    return list(dict.fromkeys(r["reviewer"] for r in recs if r["file"] == file and r["sha256"] == sha))
+
+
 def problems(briefs, steps):
-    """Why these artifacts cannot be baselined yet. steps: {name: (template, file, reviewer, prior files)}."""
+    """Why these artifacts cannot be baselined yet. steps: {name: (template, file, reviewer, prior files)}.
+    reviewer is one role (str) or several (list): every listed role must have approved the current content."""
     ap, out = latest(briefs), []
-    for step, (_, file, _, prior) in steps.items():
+    for step, (_, file, reviewer, prior) in steps.items():
         path = pathlib.Path(briefs) / file
         if not path.exists():
             out.append(f"{file}: not produced (run `{step}`)")
@@ -45,6 +53,9 @@ def problems(briefs, steps):
         else:
             if sha256(path) != ap[file]["sha256"]:
                 out.append(f"{file}: edited after it was approved (re-run `{step}`)")
+            elif not isinstance(reviewer, str):
+                signed = signed_roles(briefs, file, ap[file]["sha256"])
+                out += [f"{file}: awaiting sign-off from {r} (run `{step}`)" for r in reviewer if r not in signed]
             out += [f"{file}: stale, {p} was re-approved after it (re-run `{step}`)"
                     for p in prior if p in ap and ap[p]["n"] > ap[file]["n"]]
     return out
@@ -70,7 +81,9 @@ def package(briefs, base, steps, handoff_file, version, sources):
     manifest = dict(
         version=version, previous_version=version - 1 or None,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        artifacts=[dict(step=s, file=f, sha256=ap[f]["sha256"], approved_by=ap[f]["reviewer"]) for s, f in files],
+        status="approved",  # a baseline directory exists only after every required reviewer signed
+        artifacts=[dict(step=s, file=f, sha256=ap[f]["sha256"],
+                        approved_by=", ".join(signed_roles(briefs, f, ap[f]["sha256"]))) for s, f in files],
         source_documents=[dict(path=str(p), sha256=sha256(p)) for p in map(pathlib.Path, sources) if p.is_file()],
     )
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2))

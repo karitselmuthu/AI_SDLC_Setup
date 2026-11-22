@@ -24,6 +24,8 @@ A table, one row per requirement, ordered Mandatory first then Preferred then Op
 - ID format R-001, R-002...
 - Acceptance measure: a testable statement. Use the document's own number when given.
   If none is given, write "Proposed: ..." so it is clearly yours to confirm, never presented as the client's.
+## Interpretations (for every business problem, scope item or term the sources support more than one reading of: table ID Q1... | the statement and source | reading A | reading B (and more) | what each reading changes | the targeted discovery question, who should answer | which reading you assumed for now, marked Assumption. Never silently choose one. Write "None found" only if every need is unambiguous)
+## Conflicts (every pair of requirements, constraints, dates or sources that cannot all be true: table ID X1... | the conflicting statements with sources | requirement IDs involved | design choices likely affected (for example hosting, identity, migration, availability design) | the decision needed | who decides: client or account team | what you assumed until it is decided, marked Assumption. Show the conflict; never resolve it yourself)
 ## Unresolved questions (one per line, each tagged with the requirement IDs it blocks, ordered by impact)
 ## Traceability gaps (requirements with no source, no acceptance measure, or a conflict)
 

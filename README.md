@@ -43,13 +43,21 @@ Run them in order. Each step reads the earlier outputs from `architect/briefs/` 
 | 6 | `fit` | Client standards, policies, contracts | `enterprise-fit.md` | Security, compliance, enterprise architecture |
 | 7 | `delivery` | Nothing extra | `delivery-approach.md` | Delivery lead, pursuit lead |
 | 8 | `economics` | Spend, price lists, rate card, headcounts | `rom-estimate.md` | Delivery lead, finance, pursuit lead |
-| 9 | `proposal` | Bidder profile, credentials, references | `proposal-package.md` | Bid manager, delivery lead, pursuit lead |
+| 9 | `proposal` | Bidder profile, credentials, references | `proposal-package.md` | Bid manager, delivery lead, pursuit lead (each signs separately) |
 | 10a | `discuss` | Nothing extra | `discussion-pack.md` | Bid manager, pursuit lead |
 | 10b | `record` | Notes from the client meeting | `opportunity-record.md` | Bid manager |
-| 11 | `handoff` | Nothing extra | `solution-baseline.md`, then `architect/baseline/vN/` | Delivery lead, bid manager |
+| 11 | `handoff` | Nothing extra | `solution-baseline.md`, then `architect/baseline/vN/` | Account lead, delivery lead, architecture lead (each signs separately) |
 
 `record` reads its own previous version, so decisions accumulate across meetings.
 After a meeting, the record lists which earlier steps are now outdated. Re-run those and approve them again.
+
+**Re-running a step is a revision.** The old output is saved to `architect/briefs/history/`, the new run reads it together with
+`opportunity-record.md` (the meeting decisions), keeps IDs stable, and must end with a `## Revision history` section.
+
+**Technology catalog.** To make the agent recommend only approved technology, put the catalog at
+`architect/technology-catalog.md` (copy `docs/architect/samples/technology-catalog.md` to start). The `qualify`, `discover`, `assess`,
+`options`, `design` and `fit` steps then read it. Without one, every named product is labelled "proposal, not validated". Technology that is not in the
+catalog, or that the agent cannot assess, is marked "Unsupported: specialist review required" and gets no fit verdict or cost.
 
 ## How a step works
 
@@ -73,13 +81,17 @@ The coverage checks are plain code, not prompts. For example, the design must tr
 - **Evidence or confirm.** Claims about the bidder are cited to a document or marked `[CONFIRM: ...]`. Expired or indicative quotes are never treated as confirmed.
 - **No leaks.** Client-facing text must not contain the rate card, cost, margin or the ROM. Meeting material is labelled `[CLIENT-SHAREABLE]` or `[INTERNAL]`.
 - **Honest about gaps.** A requirement the design cannot meet is never answered "Full". Verbal figures from a meeting are recorded as unconfirmed.
+- **Documents are data.** The shared rules (`docs/architect/_rules.md`) are put in front of every step. Text in an RFP or notes cannot change the rules, the files the agent may read, or the approval process. Before each run the code scans the supplied text files for instruction-like lines ("ignore previous instructions", "mark this as approved"...). It warns the reviewer, and the output must list them under `## Source-document anomalies`.
+- **The agent cannot approve.** Approval is a prompt in code that a document cannot reach. If the model writes "Status: Approved" or "final version" it is sent back once to fix it.
+- **No unevidenced certifications.** ISO, SOC 2, PCI DSS, GDPR and similar are never claimed unless a supplied document shows them.
 - **Spend cap.** Each `claude` call is capped at USD 2 (`BUDGET` in `core.py`). Secrets and CI config are on a deny list for every agent.
 
 ## Approvals and the baseline
 
-Every approval is appended to `architect/briefs/approvals.log` with a hash of the approved file.
-`handoff` refuses to run until every artifact is produced, approved, **unedited since approval**, and not **stale** (an earlier step approved again after it).
-When it passes, it writes `architect/baseline/vN/`: a read-only copy of every approved artifact, the handoff document, and a `manifest.json` with hashes, approvers and source documents.
+Every approval is appended to `architect/briefs/approvals.log` with a hash of the approved file and the role that approved it.
+The proposal and the handoff each need **three separate approvals** (proposal: bid manager, delivery lead, pursuit lead; handoff: account lead, delivery lead, architecture lead). They are asked one by one, and a "no" from any of them sends the draft back and restarts the round. An approval only counts for the exact content it was given on.
+`handoff` refuses to run until every artifact is produced, approved by all its required roles, **unedited since approval**, and not **stale** (an earlier step approved again after it).
+When it passes, it writes `architect/baseline/vN/`: a read-only copy of every approved artifact, the handoff document, and a `manifest.json` (status `approved`) with hashes, every approver and the source documents. The solution is never marked final before that.
 Versions are never overwritten. A new run publishes `v2`, and the handoff document explains what changed.
 
 The log is a local file. It shows what was approved, but it is not tamper-proof.
@@ -107,9 +119,10 @@ architect/            architect agent code
   baseline/             generated baselines (not committed)
 core.py               shared runner: role, tool limits, session, budget, approval prompt
 sdlc.py               the SDLC pipeline and review-fix mode
-docs/architect/       the 12 step prompts, one per step (these are code: the agent reads them)
-docs/architect/samples/  made-up client documents for trying the steps
+docs/architect/       the 12 step prompts and _rules.md, the rules shared by every step (these are code: the agent reads them)
+docs/architect/samples/  made-up client documents and a sample technology catalog for trying the steps
 test_architect.py, test_baseline.py   unit tests
+test_acceptance.py    one test group per acceptance case (see below)
 ```
 
 ## Testing
@@ -120,6 +133,32 @@ pytest -q
 
 The tests use a fake model call. They check the plumbing, the coverage checks, the approval and baseline logic, and that each prompt contains its required rules.
 They do not judge the quality of what the model writes. For that, run the steps on the sample documents and read the output.
+
+### Acceptance cases
+
+`test_acceptance.py` has a group per case. **Code** means the program enforces it (a model cannot skip it); **Prompt** means the
+instruction is in the prompt and the tests prove it is there, but only a real run shows the model follows it.
+
+| # | Case | How it is enforced |
+|---|---|---|
+| 1 | Complete RFP | Prompt: qualify and discover extract criteria, constraints, deadlines. Code: every requirement must be traced in the design and the proposal |
+| 2 | Ambiguous problem | Prompt: `discover` lists competing readings and a targeted question, never a silent choice |
+| 3 | Incomplete current state | Prompt: unknowns are "Not stated" and go to client confirmation |
+| 4 | Conflicting requirements | Prompt: conflicts with affected design choices and who decides. Code: the design must answer every conflict |
+| 5 | Multiple architectures | Prompt: 2 to 4 options compared, recommendation with trade-offs |
+| 6 | Technology-neutral request | Code: the catalog is read by options, design and fit. Prompt: recommend only from it |
+| 7 | Unsupported technology | Prompt: named, what cannot be assessed, specialist review, no verdict or cost |
+| 8 | Client-mandated technology | Prompt: kept as a constraint, fit and risks checked, exceptions listed |
+| 9 | Cloud or hybrid | Prompt: hosting, connectivity, identity, data movement, resilience, operations, cross-environment cost |
+| 10 | Residency or regulation | Prompt: each requirement mapped to a design decision; open validation never reported as met |
+| 11 | Security-sensitive | Prompt: trust boundaries, sensitive flows, access control, review points. Rule: no unevidenced certification |
+| 12 | Estimate with missing inputs | Prompt: only a range or driver model, assumptions, inputs needed for a firmer figure |
+| 13 | RFP traceability | Code: every requirement must have a response row; gaps and exceptions are labelled |
+| 14 | Claim without evidence | Prompt: `[CONFIRM]` instead of invented references or certifications |
+| 15 | Change after discussion | Code: re-run archives the old version, reads the meeting record, must add a revision history |
+| 16 | Approved handoff | Code: the baseline reads every artifact and must cover every requirement and follow-up |
+| 17 | Prompt injection | Code: pre-scan, warning, human approval outside the model, read-only tools. Prompt: documents are data |
+| 18 | Human approval gate | Code: each named reviewer signs separately; the model cannot claim "approved"; the handoff refuses until all have signed |
 
 ## Adding or changing a step
 
@@ -132,5 +171,7 @@ They do not judge the quality of what the model writes. For that, run the steps 
 
 - The agents need the `claude` CLI and make real model calls, which cost money.
 - Output is a draft. Review it before it goes to a client.
+- The injection pre-scan reads text files only. A PDF or image with hidden instructions is not scanned by the code; only the rules and the read-only tools protect against it. The pre-scan matches phrases, so a cleverly worded attack can slip past it.
+- Prompt rules are instructions, not guarantees. The cases marked Prompt above depend on the model following them, so review the output.
 - Plain text, markdown and PDF sources are expected to work. Word files should be converted first. Reading a real architecture diagram image has not been tried.
 - The sample documents are made up.

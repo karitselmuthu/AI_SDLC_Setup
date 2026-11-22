@@ -36,6 +36,7 @@ Reply in markdown with exactly these sections:
 ## Sensitivity and cost drivers (the few assumptions or drivers that swing the result, and by how much)
 ## Confidence (per section High / Med / Low with the reason, and overall)
 ## Exclusions (what the ROM does not cover)
+## Inputs needed for a firmer estimate (table: input | why it matters | who supplies it | which estimate line it would narrow. When key inputs such as volumes, usage, scope or rates are missing, give ONLY a clearly labelled range or a cost-driver model, never a single figure, state every assumption used, and list the missing inputs here)
 ## Validation needs (table: item | who validates: vendor / delivery lead / client finance / other | what could change | needed by which decision point D or phase)
 ## Open questions
 

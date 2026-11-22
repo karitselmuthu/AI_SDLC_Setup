@@ -21,7 +21,7 @@ Rules:
 
 Reply in markdown with exactly these sections:
 
-## Baseline identity (the version stated below, what it is built from, status, and how to read it)
+## Baseline identity (the version stated below, what it is built from, status, and how to read it. The status reads "Draft, pending approval by the account, delivery and architecture reviewers". Never write Approved or Final: the system records approvals in manifest.json)
 ## Reading guide (table: file | what it is | read it when | approver)
 ## Solution summary (one page: the problem, the recommended option, the architecture in a few lines, the delivery approach, the headline risks)
 ## Requirements baseline (counts by class; table: ID | requirement | class | status in the design Met / Partly met / Not met / Unknown)

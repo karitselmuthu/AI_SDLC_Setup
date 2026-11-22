@@ -1,6 +1,17 @@
 import pathlib
+
+import pytest
+
 import core
 from architect import agent
+
+REAL_PROMPTS = agent.PROMPTS  # the real docs/architect folder, before any test redirects it
+
+
+@pytest.fixture(autouse=True)
+def rules_file(tmp_path):
+    """Tests redirect the prompt folder to tmp_path; the shared rules must be there too (a missing file is fatal)."""
+    (tmp_path / "_rules.md").write_text((REAL_PROMPTS / "_rules.md").read_text())
 
 
 def test_architect_is_read_only():
@@ -446,10 +457,11 @@ def _approved_pipeline(tmp_path, monkeypatch):
     (tmp_path / "handoff.md").write_text("HANDOFF")
     briefs = tmp_path / "briefs"
     briefs.mkdir()
-    for step, (_, out, _, _) in agent.STEPS.items():
+    for step, (_, out, reviewer, _) in agent.STEPS.items():
         if step != "handoff":
             (briefs / out).write_text("R-001 F1 content")
-            baseline.log_approval(briefs, step, briefs / out, "reviewer")
+            for role in [reviewer] if isinstance(reviewer, str) else reviewer:  # every required role signs
+                baseline.log_approval(briefs, step, briefs / out, role)
     monkeypatch.setattr(agent, "approve", lambda who: True)
     return doc, prompts
 

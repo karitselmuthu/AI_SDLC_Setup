@@ -25,6 +25,7 @@ Reply in markdown with exactly these sections:
 ## Impact on earlier artifacts (table: step and file | what is now outdated | action: re-run step N, or edit | priority)
 ## Risk and opportunity status (risks that rose or fell, with reasons; inputs to the bid/no-bid view; next milestone)
 ## Items needing confirmation (verbal-unconfirmed statements and anything ambiguous, with who can confirm in writing)
+## Change history (the running log of every change to requirements, scope, architecture, estimates, assumptions and risks, across all meetings, newest last: date | change | source | which artifacts it touches (diagrams, requirements, estimates, assumptions, risks) and whether each is still outdated or has been updated. Keep every earlier entry; never rewrite or delete history)
 ## Decision history (the running log: one line per decision across all meetings, newest last, with its meeting and firmness)
 
 Do not redesign the solution or restate the earlier briefs in full.
