@@ -110,12 +110,25 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 
 | 4 | `plan` | `--repo PATH` (reads the three approved outputs above itself) | `change-plan.md` | Tech lead, ticket owner (each signs separately) |
 
+| 5 | `implement` | `--repo PATH` (reads the approved change plan itself) | `implementation-report.md`, plus the edits on a new git branch | Tech lead |
+
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
 python coder/agent.py inspect --repo .
 python coder/agent.py detect --repo .
 python coder/agent.py plan --repo .
+python coder/agent.py implement --repo /path/to/the/repo
 ```
+
+**Step 5 is the first step that edits code, so it is fenced in.** It refuses to run until the change plan is approved by both reviewers, unedited
+and not stale, and the target must be a git repository with no uncommitted changes to tracked files. It then:
+
+- creates a **new branch** (`coder/<timestamp>`) and never touches the original branch, never commits and never pushes. The report says how to discard the branch;
+- implements the plan **one change at a time**, and for each change the agent may edit **only that change's files**. This is enforced at the tool level (an `Edit(path)` allow-list built from the plan, with no shell and no `acceptEdits`), and then checked again by code: after each change `git` is compared before and after, and any edit outside that change's files is **reverted** and listed in the report;
+- builds the **report from git**, not from what the model says. A model that claims "Done" without changing a file is reported as "No change made", and planned new files that were never created are listed;
+- asks the model to follow the repository's conventions and reuse existing code, to stop with "Blocked:" and make no edit when the plan turns out to be wrong, and to say what it did not do. It cannot run tests: running them is not part of this step.
+
+Your own Claude Code hooks apply to the edit agent too, so a fact-forcing hook (such as GateGuard) makes the agent state its facts and retry.
 
 Step 4 refuses to run until the ticket plan, the inspection and the stack profile are all approved, unedited and not stale. It breaks the
 work into **small changes** (each rated S or M, at most 12) with the files, functions, interfaces, data models and migrations, configuration
@@ -172,7 +185,7 @@ docs/architect/samples/  made-up client documents and a sample technology catalo
 tests/                all tests, kept apart from the code (pytest.ini sets the paths)
   test_architect.py, test_baseline.py, test_sdlc.py   unit tests
   test_acceptance.py    one test group per acceptance case (see below)
-  test_coder.py, test_stack.py   coding agent and stack scanner tests
+  test_coder.py, test_stack.py, test_implement.py   coding agent, stack scanner and implement-step tests
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
