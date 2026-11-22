@@ -27,5 +27,6 @@ Reply in markdown with exactly these sections:
 ## Backward compatibility (what could break, for whom, and how it is preserved)
 ## Order and rollback (the order of the changes, and how each is backed out)
 ## Risks and assumptions (open questions from the earlier plan that still matter, and assumptions marked Assumption)
+## Modules and dependent builds (only when the code lists several modules below the task: table with ONE ROW FOR EVERY module the code lists, '.' written as root: module | affected by this plan? | shared interfaces it exposes or consumes | dependent modules whose build and tests must be checked | evidence. Change only the affected modules. Write "Single module" otherwise)
 ## Out of scope (what you noticed but this plan does not do)
 ## Open questions (each tagged with the change C or criterion AC it blocks, and who can answer)

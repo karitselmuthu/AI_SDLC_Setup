@@ -180,11 +180,37 @@ def unprofiled(repo, text):
             "uncertain components. Reply with the complete updated document, same sections.") if gone else ""
 
 
-CHECKS = {"understand": lambda briefs, text, repo: uncovered(text),
+def readiness(text):
+    """The readiness the document states in its Status section: 'ready', 'assumptions', 'blocked' or '' if not stated."""
+    m = re.search(r"(?i)Readiness:?\s*\**\s*(Ready to implement|Ready with assumptions|Blocked)", section(text, "Status"))
+    return {"ready to implement": "ready", "ready with assumptions": "assumptions", "blocked": "blocked"}.get(m.group(1).lower(), "") if m else ""
+
+
+def unassumed(text):
+    """Readiness 'Ready with assumptions' is only honest if the assumptions are written down and marked Assumption."""
+    if readiness(text) == "assumptions" and not re.search(r"\bAssumption\b", re.sub(r"(?ms)^## Status.*?(?=^## |\Z)", "", text)):
+        return ("The Status says 'Ready with assumptions' but no assumption is recorded. Record each assumption you would use, marked "
+                "'Assumption', with the question it stands in for and who can answer it. Reply with the complete updated document, same sections.")
+    return ""
+
+
+def unmoduled(repo, text):
+    """Step 4 check: in a repository with more than one module, every module appears in the module table."""
+    mods = adapters.modules(repo) if repo else []
+    if len(mods) < 2:
+        return ""
+    firsts = {r[0].replace("`", "").strip().strip("/").lower() for r in section_rows(text, "Modules and dependent builds") if r}
+    gone = [m for m in mods if (m if m != "." else "root").lower() not in firsts and (m != "." or "." not in firsts)]
+    return ("The repository has several modules but the 'Modules and dependent builds' table has no row for: " + ", ".join(gone)
+            + ". Add a row for each: whether the change affects it, the shared interfaces involved, and which dependent builds must be checked. "
+              "Reply with the complete updated document, same sections.") if gone else ""
+
+
+CHECKS = {"understand": lambda briefs, text, repo: "\n".join(filter(None, [uncovered(text), unassumed(text)])),
           "inspect": lambda briefs, text, repo: "\n".join(filter(None, [unchecked(briefs, text),
                                                                         nonexistent(text, repo)])),
-          "plan": lambda briefs, text, repo: "\n".join(filter(None, [unmapped(briefs, text), unbounded(text),
-                                                                     nonexistent(text, repo)])),
+          "plan": lambda briefs, text, repo: "\n".join(filter(None, [unmapped(briefs, text), unbounded(text), unassumed(text),
+                                                                     unmoduled(repo, text), nonexistent(text, repo)])),
           "detect": lambda briefs, text, repo: "\n".join(filter(None, [unprofiled(repo, text),
                                                                        nonexistent(text, repo)]))}
 
@@ -330,6 +356,22 @@ def check_commands(briefs):
     return cmds
 
 
+ENV_HINTS = re.compile(r"(?i)command not found|not recognized as an internal or external command|executable file not found|"
+                       r"cannot connect to the docker daemon|could not resolve host|temporary failure in name resolution|"
+                       r"network is unreachable|connection refused|EOFError: EOF when reading a line")
+
+
+def env_failure(rc, text):
+    """Why a failed check looks like the environment, not the code ('' if it looks like a real failure). A judgement from
+    the exit code and the output only, so the report calls it probable."""
+    if rc == "timeout":
+        return "the check timed out"
+    if rc in (126, 127):
+        return "the command could not be started (exit %s)" % rc
+    m = ENV_HINTS.search(text or "")
+    return f"output says '{m.group(0)}'" if m else ""
+
+
 def run_checks(repo, cmds, timeout=600):
     """Run each approved check in the repo and record exactly what happened. Failure and timeout are results, not errors."""
     out = []
@@ -341,7 +383,8 @@ def run_checks(repo, cmds, timeout=600):
             rc, text = r.returncode, r.stdout + r.stderr
         except subprocess.TimeoutExpired:
             rc, text = "timeout", f"stopped after {timeout} seconds"
-        out.append(dict(cmd=c, rc=rc, secs=round(time.time() - t, 1), tail="\n".join(text.splitlines()[-25:])[-3000:]))
+        out.append(dict(cmd=c, rc=rc, secs=round(time.time() - t, 1), tail="\n".join(text.splitlines()[-25:])[-3000:],
+                        env=env_failure(rc, text) if rc != 0 else ""))
     return out
 
 
@@ -399,19 +442,25 @@ def review_flags(diff):
 def results_table(results):
     if not results:
         return "Not run."
-    rows = "\n".join(f"| `{r['cmd']}` | {'PASS' if r['rc'] == 0 else 'FAIL'} (exit {r['rc']}) | {r['secs']} |" for r in results)
+    def label(r):
+        return ("PASS" if r["rc"] == 0 else f"COULD NOT RUN, probable environment failure: {r['env']}" if r.get("env") else "FAIL") + f" (exit {r['rc']})"
+    rows = "\n".join(f"| `{r['cmd']}` | {label(r)} | {r['secs']} |" for r in results)
     fails = "\n\n".join(f"Output of `{r['cmd']}` (last lines):\n```\n{r['tail']}\n```" for r in results if r["rc"] != 0)
     return "| Check | Result | Seconds |\n|---|---|---|\n" + rows + ("\n\n" + fails if fails else "")
 
 
 def build_tests_report(repo, branch, commands, ran, base_res, runs, files, diff, reverted, reply, cov="", cov_note=""):
     final = runs[-1] if runs else []
-    bad_now = {r["cmd"] for r in final if r["rc"] != 0}
-    bad_before = {r["cmd"] for r in base_res if r["rc"] != 0}
+    bad_now = {r["cmd"] for r in final if r["rc"] != 0 and not r.get("env")}
+    envs = [r for r in final if r.get("env")]
+    bad_before = {r["cmd"] for r in base_res if r["rc"] != 0 and not r.get("env")}
     if not ran:
         verdict = "Local checks were NOT run" + (" (no applicable commands were found)" if not commands else " (not approved)") + "."
     elif bad_now:
         verdict = f"{len(bad_now)} of {len(final)} local checks FAILED after {len(runs) - 1} fix attempt(s)."
+    elif envs:
+        verdict = (f"{len(final) - len(envs)} of {len(final)} local checks passed; {len(envs)} could not run because of the environment, "
+                   "not the code (probable): " + "; ".join(f"`{r['cmd']}` ({r['env']})" for r in envs) + ". Fix the environment and re-run.")
     else:
         verdict = f"All {len(final)} local checks passed."
     verdict += cov_note
@@ -504,7 +553,7 @@ def review_gaps(findings, cids, acids, text):
             + ". Add a row for each. Reply with the complete updated document, same sections.") if gone else ""
 
 
-def pr_gaps(briefs, text):
+def pr_gaps(briefs, text, deps=(), schema=()):
     """Step 8 check: a short title, every acceptance criterion mapped, migration notes present, nothing secret."""
     plan = pathlib.Path(briefs) / "implementation-plan.md"
     ids = _ids("AC", section(plan.read_text(), "Acceptance criteria")) if plan.exists() else []
@@ -515,7 +564,19 @@ def pr_gaps(briefs, text):
         fix.append("The Title must be one line of at most 72 characters.")
     if gone := [i for i in ids if not re.search(rf"\b{i}\b", cells)]:
         fix.append(f"The Acceptance criteria mapping has no row for {', '.join(gone)}.")
-    if not section(text, "Migration and compatibility notes").strip():
+    if deps:
+        dep = section(text, "Dependency changes")
+        missing = [d for d in deps if d.rsplit("/", 1)[-1] not in dep]
+        if not dep.strip() or missing:
+            fix.append("Dependency declarations changed in " + ", ".join(deps) + ". Add a '## Dependency changes' section naming each manifest "
+                       "and, for each dependency: why it is needed, the version and why it is compatible, which manifest and lockfile were "
+                       "updated, and what could not be validated (for example an unreachable registry)."
+                       + (f" It does not mention: {', '.join(missing)}." if dep.strip() else ""))
+    mig = section(text, "Migration and compatibility notes")
+    if schema and not (re.search(r"(?i)rollback|roll back|revert", mig) and re.search(r"(?i)compatib", mig)):
+        fix.append("Interface, schema or migration files changed (" + ", ".join(schema[:5]) + "). The Migration and compatibility notes must "
+                   "say how it stays compatible with existing data and consumers, and how it is rolled back.")
+    if not mig.strip():
         fix.append("The Migration and compatibility notes are empty. Write 'None' with what was searched, if none.")
     if any(re.search(rx, text) for _, rx in diffscan.SECRETS) or any(
             (m := diffscan.CREDENTIAL.search(l)) and not diffscan.PLACEHOLDER.search(m.group(2)) for l in text.splitlines()):
@@ -575,6 +636,9 @@ def run_step(name, files, repo=None):
         bad = baseline.problems(briefs, {s: v for s, v in STEPS.items() if v[1] in prior})
         if bad:
             sys.exit(f"Cannot {name} yet. Fix these first:\n  " + "\n  ".join(bad))
+    for earlier in ("implementation-plan.md",):
+        if earlier in prior and (briefs / earlier).exists() and readiness((briefs / earlier).read_text()) == "blocked":
+            sys.exit(f"Cannot {name}: {earlier} says Readiness: Blocked. Answer its open questions or record the assumptions, then re-run understand.")
     docs = [briefs / p for p in prior] + [pathlib.Path(f).resolve() for f in files]
     missing = [str(d) for d in docs if not d.is_file()]
     if missing:
@@ -600,6 +664,9 @@ def run_step(name, files, repo=None):
     elif src:
         extra += "\nOther documents: " + ", ".join(map(str, src))
     extra += f"\nRepository to read: {repo}" if repo else "\nNo repository was given: say so under Blockers."
+    if name == "plan" and repo and len(adapters.modules(repo)) > 1:
+        extra += ("\n\nModules found by the code (directories with a build manifest; '.' is the repository root): "
+                  + ", ".join(adapters.modules(repo)) + ". Fill the 'Modules and dependent builds' table with one row for each.")
     if name == "detect":
         extra += "\n\nDetected by the code (ground truth for what exists, paths relative to the repository):\n" + \
                  stack.render(stack.scan(repo)) + "\n" + adapters.render(adapters.plan(repo))
@@ -643,7 +710,11 @@ def run_implement(repo):
         sys.exit(f"{name}: {repo} is not a git repository. The work goes on a new branch so it can be reviewed or discarded.")
     if git(repo, "status", "--porcelain", "--untracked-files=no")[1]:
         sys.exit(f"{name}: {repo} has uncommitted changes to tracked files. Commit or stash them first.")
-    changes = parse_changes((briefs / "change-plan.md").read_text())
+    plan_text = (briefs / "change-plan.md").read_text()
+    if readiness(plan_text) == "blocked":
+        sys.exit(f"{name}: the approved change plan says Readiness: Blocked. Resolve its open questions (or record the assumptions) "
+                 "and re-run the plan step; nothing was edited.")
+    changes = parse_changes(plan_text)
     if not changes:
         sys.exit(f"{name}: the approved change plan has no Change set rows C1, C2...")
     out = briefs / out_name
@@ -754,8 +825,8 @@ def run_tests(repo, checks=None):
         reverted.extend(settle(repo, base, before, is_test_path, dict(files=[]), reply)["reverted"])
         return reply
 
-    def failing(results):
-        return [r for r in results if r["rc"] != 0]
+    def failing(results):  # real failures only: a check that could not run for environmental reasons is not a test to fix
+        return [r for r in results if r["rc"] != 0 and not r.get("env")]
 
     already = {r["cmd"] for r in base_res if r["rc"] != 0}
 
@@ -781,7 +852,7 @@ def run_tests(repo, checks=None):
         files = sorted(x for x in set(start) | set(end) if is_test_path(x) and start.get(x, _NONE) != end.get(x, _NONE))
         diff = test_diff(repo, start, end, files)
         last = runs[-1] if runs else []
-        cov_args = (commands, ran, last, ran or not commands, bool(checks))
+        cov_args = (commands, ran, last, ran or not commands, bool(checks), sorted(set(impl) | set(files)))
         out.write_text(build_tests_report(repo, branch, commands, ran, base_res, runs, files, diff, reverted, reply,
                                           adapters.coverage(stack_plan, *cov_args), adapters.summary(stack_plan, *cov_args)))
         print(f"checks: {'not run' if not runs else 'all passed' if not failing(runs[-1]) else str(len(failing(runs[-1]))) + ' failing'}; "
@@ -810,7 +881,12 @@ def run_review(repo):
     (briefs / "change.diff").write_text(diff)
     planned = {p for ch in changes.values() for p, _ in ch["files"]}
     found = diffscan.scan(diffscan.parse_diff(diff), changed)
+    found += diffscan.dependency_findings(diff, changed, repo)
     add = lambda kind, sev, f, why: found.append(dict(kind=kind, severity=sev, file=f, line=0, text=f, why=why))  # noqa: E731
+    mods = adapters.touched(adapters.modules(repo), changed) if len(adapters.modules(repo)) > 1 else []
+    if len(mods) > 1:
+        add("Multiple modules", "Check", ", ".join(mods), f"The change touches {len(mods)} modules. Confirm the shared interfaces between them "
+            "and that each dependent build was checked.")
     for f in changed:
         if f not in planned and not is_test_path(f):
             add("Accidental edit", "Blocker", f, "Changed, but not in any change of the approved plan and not a test file.")
@@ -877,13 +953,19 @@ def run_pr(repo):
         shutil.copy2(out, old)
     core.EXTRA_DIRS.extend([str(repo), str(briefs)])
     head = (PROMPTS / "_rules.md").read_text() + "\n\n" + (PROMPTS / template).read_text()
+    tracked0, new0, _ = work_files(repo, [impl_report, tests])
+    diff0 = work_diff(repo, new0)
+    deps = sorted(diffscan.dependency_changes(diff0))
+    schema = [f for f in sorted(tracked0 | new0) if diffscan.is_interface(f)]
     common = ("\n\nApproved earlier outputs (read them): " + ", ".join(str(briefs / f) for f in (
         "implementation-plan.md", "change-plan.md", "implementation-report.md", "test-report.md", "review-report.md",
-        "change.diff")) + f"\nRepository, on branch {branch}: {repo}")
+        "change.diff")) + f"\nRepository, on branch {branch}: {repo}"
+        + (f"\nDependency declarations changed in: {', '.join(deps)} (add the '## Dependency changes' section)." if deps else "")
+        + (f"\nInterface, schema or migration files changed: {', '.join(schema[:8])} (cover compatibility and rollback)." if schema else ""))
 
     def write(prompt):
         reply = ask("coder", prompt)
-        if gap := "\n".join(filter(None, [pr_gaps(briefs, reply), false_approval(None, reply), claims_qa(reply),
+        if gap := "\n".join(filter(None, [pr_gaps(briefs, reply, deps, schema), false_approval(None, reply), claims_qa(reply),
                                           nonexistent(reply, repo)])):
             reply = ask("coder", gap)
         return reply
@@ -927,6 +1009,7 @@ def run_pr(repo):
             + "\n\n### Remaining questions\n" + (section(review, "Remaining questions").strip() or "Not stated."),
             "## Risks\n" + section(reply, "Risks").strip(),
             "## Migration and compatibility notes\n" + section(reply, "Migration and compatibility notes").strip(),
+            *(["## Dependency changes\n" + section(reply, "Dependency changes").strip()] if section(reply, "Dependency changes").strip() else []),
             "## Source documents and approvals\nThe approved documents this change was built from, by content hash and the roles that approved "
             "them. Attach them or link them from the ticket.\n\n| Document | SHA-256 (first 12) | Approved by |\n|---|---|---|\n" + prov,
             "## Reviewer checklist\n- [ ] Each acceptance criterion above is really met by the code and a test\n"

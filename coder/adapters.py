@@ -350,6 +350,28 @@ def _probe_ok(repo, probe):
         return False
 
 
+MODULE_FILES = ["package.json", "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "Cargo.toml", "pyproject.toml", "setup.py",
+                "*.csproj", "composer.json", "Gemfile", "pubspec.yaml", "Package.swift"]
+
+
+def modules(repo):
+    """Directories that hold a build manifest ('.' is the repository root): the repository's modules, from files only."""
+    ctx = Ctx(repo)
+    return sorted({(f.rsplit("/", 1)[0] if "/" in f else ".") for pat in MODULE_FILES for f in ctx.find(pat)})
+
+
+def touched(mods, files):
+    """The modules a set of changed files falls in (the deepest module wins; files in no module sit in the root)."""
+    out = set()
+    for f in files:
+        best = max((m for m in mods if m != "." and f.startswith(m + "/")), key=len, default=None)
+        if best:
+            out.add(best)
+        elif "." in mods:
+            out.add(".")
+    return sorted(out)
+
+
 def plan(repo):
     ctx, stacks, checks, gaps, seen, specs = Ctx(repo), [], [], [], set(), []
     for fn in ADAPTERS:
@@ -402,7 +424,8 @@ def plan(repo):
         if ext in handled:
             continue
         unsupported.append(dict(what=f"{ext} files ({cnt})", reason="unrecognised file type: no adapter, no checks selected"))
-    return dict(stacks=stacks, checks=checks, gaps=gaps, unsupported=unsupported, truncated=ctx.truncated or langs["truncated"])
+    return dict(stacks=stacks, checks=checks, gaps=gaps, unsupported=unsupported, truncated=ctx.truncated or langs["truncated"],
+                modules=sorted({(f.rsplit("/", 1)[0] if "/" in f else ".") for pat in MODULE_FILES for f in ctx.find(pat)}))
 
 
 def runnable(p):
@@ -434,6 +457,10 @@ def _rows(n, data):
     return "\n".join("| " + " | ".join(str(x).replace("|", "/").replace("\n", " ") for x in r) + " |" for r in data) or "| none |" + " |" * (n - 1)
 
 
+def _result(r):
+    return f"Not run: environment failure: {r['env']}" if r.get("env") else f"{'PASS' if r['rc'] == 0 else 'FAIL'} (exit {r['rc']})"
+
+
 def outcomes(p, extra, ran, results, approved=True, overridden=False):
     """One outcome string per check of the plan. PASS or FAIL only if the check ran and its result is in `results`."""
     got = {r["cmd"]: r for r in (results or [])}
@@ -449,11 +476,11 @@ def outcomes(p, extra, ran, results, approved=True, overridden=False):
             out.append("Not run: " + ("the list was not approved" if not approved else "no check run was recorded"))
         else:
             r = got[c["cmd"]]
-            out.append(f"{'PASS' if r['rc'] == 0 else 'FAIL'} (exit {r['rc']})")
+            out.append(_result(r))
     return out
 
 
-def summary(p, extra, ran, results, approved=True, overridden=False):
+def summary(p, extra, ran, results, approved=True, overridden=False, files=()):
     """One sentence for the verdict: how much of the selected coverage did not run, and the gaps."""
     o = outcomes(p, extra, ran, results, approved, overridden)
     skipped, gaps, uns = sum(not x.startswith(("PASS", "FAIL")) for x in o), len(p["gaps"]), len(p["unsupported"])
@@ -463,7 +490,7 @@ def summary(p, extra, ran, results, approved=True, overridden=False):
             f"{'y' if uns == 1 else 'ies'} (see Stack coverage).")
 
 
-def coverage(p, extra, ran, results, approved=True, overridden=False):
+def coverage(p, extra, ran, results, approved=True, overridden=False, files=()):
     """The 'Stack coverage' section of the test report."""
     got = {r["cmd"]: r for r in (results or [])}
     o = outcomes(p, extra, ran, results, approved, overridden)
@@ -481,7 +508,15 @@ def coverage(p, extra, ran, results, approved=True, overridden=False):
     others = [c for c in (extra or []) if c not in known]
     if others:
         parts.append("### Other checks (from the stack profile or --check)\n| Command | Outcome |\n|---|---|\n" + _rows(2, [
-            (f"`{c}`", f"{'PASS' if got[c]['rc'] == 0 else 'FAIL'} (exit {got[c]['rc']})" if ran and c in got else "Not run") for c in others]))
+            (f"`{c}`", _result(got[c]) if ran and c in got else "Not run") for c in others]))
+    mods = p.get("modules", [])
+    if len(mods) > 1:
+        hit = touched(mods, files)
+        rest = [m for m in mods if m not in hit]
+        parts.append("### Modules\nThe repository has " + str(len(mods)) + " modules (directories with a build manifest): " + ", ".join(f"`{m}`" for m in mods)
+                     + ".\nThe change touches: " + (", ".join(f"`{m}`" for m in hit) or "none") + ".\nNot touched: " + (", ".join(f"`{m}`" for m in rest) or "none")
+                     + ". The checks above run from the repository root. Which modules depend on the touched ones is **not computed by the code**: "
+                       "a dependent module's build and tests were not run unless a check listed above covers them.")
     if p["truncated"]:
         parts.append("The file scan stopped at its cap, so detection may be incomplete.")
     return "\n\n".join(parts)

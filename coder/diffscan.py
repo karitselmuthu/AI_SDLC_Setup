@@ -39,6 +39,16 @@ LEFTOVERS = [
     ("TODO or FIXME added", r"\b(TODO|FIXME|XXX)\b"),
     ("output statement added", r"\bprint\(|console\.log\("),
 ]
+SENSITIVE_LOG = re.compile(r"(?i)\b(print|log\w*\.\w+|logger\.\w+|logging\.\w+|console\.\w+|System\.out\.println|fmt\.Print\w*)\s*\(.*"
+                           r"\b(password|passwd|secret|token|api[_-]?key|authorization|private[_-]?key|credential)s?\b")
+LOCKS = {"package.json": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"], "pyproject.toml": ["poetry.lock", "uv.lock"],
+         "Pipfile": ["Pipfile.lock"], "Cargo.toml": ["Cargo.lock"], "go.mod": ["go.sum"], "Gemfile": ["Gemfile.lock"],
+         "composer.json": ["composer.lock"]}
+LOCKFILES = {l for ls in LOCKS.values() for l in ls}
+# a line that declares a dependency: name plus version in JSON/TOML, requirements, go.mod, Gradle, Maven, Gemfile
+DEP_LINE = re.compile(r"""^\s*(?:["']?(?!version|name|description|license|main|type|private)[\w@/.-]+["']?\s*[:=]\s*\{?\s*["']?[\^~<>=!*]*\d"""
+                      r"""|[\w.-]+(?:\[[\w,]+\])?\s*(?:==|>=|<=|~=|!=|>|<)\s*\d|[\w./-]+\s+v\d|(?:implementation|api|testImplementation|compileOnly|runtimeOnly)\b"""
+                      r"""|<(?:artifactId|groupId)>|gem\s+["']|[\w-]+\s*=\s*\{[^}]*version)""")
 CONFLICT = re.compile(r"^(<<<<<<< |=======$|>>>>>>> )")
 BARE_EXCEPT = re.compile(r"^\s*except\s*:")
 EXCEPT_LINE = re.compile(r"^\s*except\b[^:]*:\s*$")
@@ -89,6 +99,8 @@ def scan(added, files=()):
         for name, rx in LEFTOVERS:
             if re.search(rx, t) and not f.startswith(("tests/", "test/")) and "/test_" not in "/" + f:
                 out.append(_hit("Leftover", "Check", f, n, t, name + ". Confirm it is intended."))
+        if SENSITIVE_LOG.search(t) and not f.startswith(("tests/", "test/")) and "/test_" not in "/" + f:
+            out.append(_hit("Sensitive data", "Should fix", f, n, t, "A value named like a secret is passed to a log or print call. Confirm it never prints a credential."))
         if BARE_EXCEPT.match(t):
             out.append(_hit("Error handling", "Should fix", f, n, t, "A bare except catches everything, including exit signals."))
         if EMPTY_CATCH.search(t):
@@ -104,4 +116,51 @@ def scan(added, files=()):
                             "An interface, schema or migration file changed. Confirm compatibility with consumers and existing data, and that a compatibility test covers it."))
         elif any(fnmatch.fnmatch(base, p) for p in DEPENDENCY_FILES):
             out.append(_hit("Dependency change", "Check", f, 0, f, "A dependency or lock file changed. Confirm the plan allows it."))
+    return out
+
+
+def is_interface(rel):
+    """An interface, schema or migration file (the files whose changes need a compatibility and rollback note)."""
+    base = rel.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(base, p) for p in INTERFACE_FILES) or any(d in "/" + rel for d in INTERFACE_DIRS)
+
+
+def dependency_changes(diff):
+    """{manifest path: [changed declaration lines]} for manifests whose diff adds or removes a dependency declaration."""
+    out, path = {}, None
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = None if line == "+++ /dev/null" else line[6:] if line.startswith("+++ b/") else line[4:]
+        elif line.startswith("--- "):
+            continue
+        elif path and line[:1] in "+-" and any(fnmatch.fnmatch(path.rsplit("/", 1)[-1], p) for p in DEPENDENCY_FILES):
+            base = path.rsplit("/", 1)[-1]
+            if base not in LOCKFILES and not base.endswith(".lock") and DEP_LINE.match(line[1:]):
+                out.setdefault(path, []).append(line.strip()[:100])
+    return out
+
+
+def dependency_findings(diff, changed, repo):
+    """Findings about dependency changes: declared without updating the lockfile, lockfile changed alone, or just 'confirm why'."""
+    import pathlib
+    out, deps = [], dependency_changes(diff)
+    for path, lines in deps.items():
+        d, base = (path.rsplit("/", 1)[0] if "/" in path else ""), path.rsplit("/", 1)[-1]
+        locks = [(d + "/" if d else "") + l for l in LOCKS.get(base, [])]
+        have = [l for l in locks if (pathlib.Path(repo) / l).exists()]
+        if have and not any(l in changed for l in have):
+            out.append(dict(kind="Dependency change", severity="Should fix", file=path, line=0, text=lines[0],
+                            why=f"{len(lines)} dependency declaration line(s) changed but the lockfile ({', '.join(have)}) did not: the lock is out of date."))
+        else:
+            out.append(dict(kind="Dependency change", severity="Check", file=path, line=0, text=lines[0],
+                            why=f"{len(lines)} dependency declaration line(s) changed. Confirm why it is needed, that the version is compatible, "
+                                "and which validation could not run." + ("" if have else " No lockfile exists for it in the repository.")))
+    for f in changed:
+        base = f.rsplit("/", 1)[-1]
+        if base in LOCKFILES:
+            d = f.rsplit("/", 1)[0] + "/" if "/" in f else ""
+            mans = [m for m, ls in LOCKS.items() if base in ls]
+            if not any(d + m in deps or d + m in changed for m in mans):
+                out.append(dict(kind="Dependency change", severity="Check", file=f, line=0, text=f,
+                                why="A lockfile changed with no matching manifest change. Confirm this is intended."))
     return out
