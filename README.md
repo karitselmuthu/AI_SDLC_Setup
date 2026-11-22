@@ -140,9 +140,10 @@ core.py               shared runner: role, tool limits, session, budget, approva
 sdlc.py               the SDLC pipeline and review-fix mode
 docs/architect/       the 12 step prompts and _rules.md, the rules shared by every step (these are code: the agent reads them)
 docs/architect/samples/  made-up client documents and a sample technology catalog for trying the steps
-test_architect.py, test_baseline.py   unit tests
-test_acceptance.py    one test group per acceptance case (see below)
-test_coder.py         coding agent tests
+tests/                all tests, kept apart from the code (pytest.ini sets the paths)
+  test_architect.py, test_baseline.py, test_sdlc.py   unit tests
+  test_acceptance.py    one test group per acceptance case (see below)
+  test_coder.py         coding agent tests
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 
@@ -157,7 +158,7 @@ They do not judge the quality of what the model writes. For that, run the steps 
 
 ### Acceptance cases
 
-`test_acceptance.py` has a group per case. **Code** means the program enforces it (a model cannot skip it); **Prompt** means the
+`tests/test_acceptance.py` has a group per case. **Code** means the program enforces it (a model cannot skip it); **Prompt** means the
 instruction is in the prompt and the tests prove it is there, but only a real run shows the model follows it.
 
 | # | Case | How it is enforced |
@@ -186,7 +187,7 @@ instruction is in the prompt and the tests prove it is there, but only a real ru
 1. Write the prompt in `docs/architect/<step>.md`.
 2. Add one row to `STEPS` in `architect/agent.py`: template, output file, reviewer, and the earlier outputs it reads.
 3. If the step must cover a list of IDs from an earlier output, add a `must_cover(...)` check.
-4. Add a test in `test_architect.py`.
+4. Add a test in `tests/test_architect.py`.
 
 ## Limits
 
