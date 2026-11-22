@@ -1,8 +1,12 @@
 """Shared plumbing for all agents: run one agent via the `claude` CLI with its own role,
 tool limits and session, plus the human-approval prompt. Each agent registers itself in AGENTS."""
+import json
+import os
 import pathlib
 import re
 import subprocess
+import sys
+import time
 import uuid
 
 RO = "Read,Grep,Glob"
@@ -17,16 +21,46 @@ EXTRA_DIRS = []  # extra readable folders (e.g. source docs for the architect)
 sessions = {}  # agent -> session id; each agent keeps its own conversation
 
 
+# Every `claude -p` call otherwise loads the user's skills, plugins, MCP tools and hooks (measured: ~65,000 input tokens for the word "ok").
+# These flags keep only the tools named below: ~6,000 tokens. The agents' own tool limits and deny rules are passed explicitly, so nothing is lost.
+LEAN = ["--disable-slash-commands", "--strict-mcp-config", "--setting-sources", ""]
+
+
+def usage_log():
+    root = os.environ.get("SDLC_WORKSPACE")
+    return pathlib.Path(root) / "usage.jsonl" if root else pathlib.Path(__file__).resolve().parent / "usage.jsonl"
+
+
+def record(agent, d, secs):
+    """One line per model call: who, which step (from the command line), real token counts and cost reported by the CLI."""
+    u = d.get("usage") or {}
+    row = dict(t=time.strftime("%Y-%m-%dT%H:%M:%S"), agent=agent, step=" ".join(sys.argv[1:2]) and f"{pathlib.Path(sys.argv[0]).parent.name}:{sys.argv[1]}",
+               input=u.get("input_tokens", 0), cache_write=u.get("cache_creation_input_tokens", 0), cache_read=u.get("cache_read_input_tokens", 0),
+               output=u.get("output_tokens", 0), usd=round(d.get("total_cost_usd") or 0, 4), turns=d.get("num_turns"), secs=round(secs, 1))
+    try:
+        with open(usage_log(), "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        pass  # measuring must never break a run
+
+
 def ask(agent, prompt):  # ponytail: shells out to claude CLI; swap for SDK if you need more control
     cfg = AGENTS[agent]
     new = agent not in sessions
     sid = sessions.setdefault(agent, str(uuid.uuid4()))
-    cmd = ["claude", "-p", prompt, "--permission-mode", cfg.get("mode", "default"),
+    cmd = ["claude", "-p", prompt, "--output-format", "json", *LEAN, "--permission-mode", cfg.get("mode", "default"),
            "--tools", cfg["tools"], "--disallowedTools", *DENY, "--max-budget-usd", BUDGET,
            *(["--allowedTools", *[a.format(test=TEST_CMD) for a in cfg["allow"]]] if "allow" in cfg else []),
            *[x for d in EXTRA_DIRS for x in ("--add-dir", d)],
            *(["--session-id", sid, "--append-system-prompt", cfg["role"]] if new else ["--resume", sid])]
-    return subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+    t0 = time.time()
+    out = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return out  # not JSON (an error message): hand it back as before, so the callers' "no usable document" guard still sees it
+    record(agent, d, time.time() - t0)
+    return d.get("result") or ""
 
 
 def approve(who):

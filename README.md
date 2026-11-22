@@ -221,6 +221,12 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
+## Token and cost measurement
+
+Every model call is logged to `usage.jsonl` (in `SDLC_WORKSPACE`, git-ignored) with the CLI's real token counts and cost. `python tokens.py [WORKSPACE]`
+prints one row per agent step. Calls use `--disable-slash-commands --strict-mcp-config --setting-sources ""`: without them every call loaded the user's
+skills, plugins and MCP tools (about 65,000 input tokens for one word); with them about 6,000. Agent tool limits and deny rules are still passed explicitly.
+
 ## QA agent (10 steps)
 
 A senior quality analyst for one change. Same pattern as the other agents: each step writes to `qa/briefs/`, named humans approve it, approvals go to the ledger.
