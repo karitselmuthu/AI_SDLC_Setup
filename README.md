@@ -113,6 +113,8 @@ A separate agent in `coder/`, built one activity at a time like the architect. I
 | 5 | `implement` | `--repo PATH` (reads the approved change plan itself) | `implementation-report.md`, plus the edits on a new git branch | Tech lead |
 
 | 6 | `tests` | `--repo PATH` (on the branch step 5 created), optional `--check CMD` | `test-report.md`, plus test edits on that branch | Tech lead |
+| 7 | `review` | `--repo PATH` (same branch) | `review-report.md`, `change.diff` | Tech lead |
+| 8 | `pr` | `--repo PATH` (same branch) | `pull-request.md` | Tech lead, ticket owner |
 
 ```bash
 python coder/agent.py understand docs/coder/samples/ticket.md --repo .
@@ -139,6 +141,22 @@ fixtures...): this is enforced with a glob allow-list on the Edit tool and re-ch
 reported. The prompt demands normal, boundary and failure cases for every acceptance criterion, deterministic fixtures (no network, clock or
 randomness), no weakening, deleting or skipping of existing tests, and "Production defect suspected" instead of fixing code. A code check
 requires a complete test matrix row for every criterion.
+
+**Step 7 reviews the whole change before handoff; step 8 prepares the pull request.** Both only read, and neither pushes or opens the PR:
+step 8 prints the `git push` and `gh pr create` commands for a human to run.
+
+Step 7 first runs a plain-code scanner (`coder/diffscan.py`) over the **added lines** of the diff: secrets (key formats, credential-looking
+assignments, secret-bearing files such as `.env` or `*.pem`, always masked in the report), merge-conflict markers, unsafe defaults (TLS verification
+off, `shell=True`, `eval`, `0.0.0.0`, debug on...), swallowed or bare exceptions, and leftovers (debugger, TODO, print). Code also adds files changed
+that no planned change or test covers, unplanned untracked files, plan changes not marked Done, and failing or unrun checks. The model must answer
+every scanner finding, every planned change and every acceptance criterion (checked in code, one repair pass), and list limitations and remaining
+questions. **The verdict comes from the code:** any Blocker from the scan or the model means "Not ready for human review", whatever the model says.
+The report always says it is a self-review, not an independent review or approval.
+
+Step 8 needs the review approved and not stale. The model writes only the title, problem, implementation summary, acceptance-criteria mapping, risks
+and migration notes (checked: title length, a row per criterion, migration section present, no secrets, no approval or QA claims). Code adds the
+ticket link (or says it is not stated), the files changed with line counts from git, the real check results, the review outcome with its limitations and
+open questions, the approved source documents with content hashes and approvers, and a reviewer checklist. Nothing factual is left to the model.
 
 **The code, not the model, runs the checks** (the agent has no shell). The commands come from the approved stack profile (only recognised check
 runners such as `pytest`, `ruff`, `mypy`, `yarn test`, `go test` or `make test`, matched on the command itself; a command that merely mentions one, like a script that launches a pipeline, is never run; installs, deploys, network, git, `rm` and shell chaining are filtered out) or from `--check CMD`, and the tech lead approves the
@@ -203,6 +221,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_architect.py, test_baseline.py, test_sdlc.py   unit tests
   test_acceptance.py    one test group per acceptance case (see below)
   test_coder.py, test_stack.py, test_implement.py, test_tests_step.py   coding agent, stack scanner, implement and tests-step tests
+  test_diffscan.py, test_handoff.py                                     diff scanner, review (step 7) and pull request (step 8)
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 

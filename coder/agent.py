@@ -6,8 +6,11 @@
   python coder/agent.py plan --repo PATH [FILE...]                   4. bounded change plan: each AC mapped to changes
   python coder/agent.py implement --repo PATH                        5. implement the approved plan on a new git branch
   python coder/agent.py tests --repo PATH [--check CMD]...           6. developer tests, then run the local checks
+  python coder/agent.py review --repo PATH                           7. review the whole diff before handoff
+  python coder/agent.py pr --repo PATH                               8. prepare the pull request description
 Steps 1-4 only read. Step 5 edits, one planned change at a time, only the files that change lists, on a new branch.
 Step 6 edits test files only, on that same branch, and the code (not the model) runs the repository's local checks.
+Steps 7 and 8 only read. They never push and never open the pull request: they print the commands for a human to run.
 TICKET is the approved ticket; FILEs are designs, standards or other inputs; PATH is the repository to work in.
 """
 import pathlib
@@ -27,7 +30,7 @@ sys.path.insert(0, str(HERE.parent))  # so `import core` works when run as a scr
 import core  # noqa: E402
 from core import approve, ask, flagged, false_approval  # noqa: E402
 from architect import baseline  # noqa: E402
-from coder import stack  # noqa: E402  (the generic approval ledger: log_approval and problems)
+from coder import diffscan, stack  # noqa: E402  (the generic approval ledger: log_approval and problems)
 
 core.AGENTS["coder"] = dict(
     role="You are the Coding Agent. In these steps you only read and plan: never edit files, run commands or write "
@@ -66,8 +69,10 @@ STEPS = {
              ["implementation-plan.md", "repository-inspection.md", "stack-profile.md"]),
     "implement": ("implement.md", "implementation-report.md", [TECH], ["change-plan.md"]),  # the first step that edits
     "tests": ("tests.md", "test-report.md", [TECH], ["implementation-report.md"]),  # test files only; code runs checks
+    "review": ("review.md", "review-report.md", [TECH], ["implementation-report.md", "test-report.md"]),
+    "pr": ("pr.md", "pull-request.md", [TECH, OWNER], ["review-report.md"]),
 }
-NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect", "plan", "implement", "tests"}
+NEEDS_TICKET, NEEDS_REPO = {"understand"}, {"inspect", "detect", "plan", "implement", "tests", "review", "pr"}
 MAX_CHANGES = 12  # a plan larger than this is split into a first slice and a follow-up ticket
 
 
@@ -444,6 +449,110 @@ def diff_for(diff, name):
             keep.append(l)
     return keep
 
+# ---- steps 7 and 8 helpers: the work's diff, review checks and the PR text -------------------------------------
+
+def work_context(name, repo):
+    """Shared gate for steps 7 and 8: earlier reports approved and unedited, a git repo on the step 5 branch."""
+    template, out_name, reviewers, prior = STEPS[name]
+    if not repo:
+        sys.exit(f"{name}: pass --repo PATH, the repository whose change is being handed off.")
+    briefs = HERE / "briefs"
+    bad = baseline.problems(briefs, {s: v for s, v in STEPS.items() if v[1] in prior})
+    if bad:
+        sys.exit(f"Cannot {name} yet. Fix these first:\n  " + "\n  ".join(bad))
+    repo = pathlib.Path(repo).resolve()
+    if not repo.is_dir() or git(repo, "rev-parse", "--is-inside-work-tree")[1] != "true":
+        sys.exit(f"{name}: {repo} is not a git repository.")
+    report = (briefs / "implementation-report.md").read_text()
+    m = re.search(r"on branch `([^`]+)`", report)
+    branch, here = (m.group(1) if m else ""), git(repo, "rev-parse", "--abbrev-ref", "HEAD")[1]
+    if not branch or here != branch:
+        sys.exit(f"{name}: the approved implementation is on branch {branch or '(not found in the report)'}, but "
+                 f"{repo} is on {here}. Check that branch out first.")
+    return briefs, repo, branch, report
+
+
+def work_files(repo, reports):
+    """(changed tracked files, new files the reports name, other untracked files that no report mentions)."""
+    named = {t for text in reports for t in re.findall(r"`([^`\s]+)`", text) if "/" in t or EXT.search(t)}
+    tracked = set(git(repo, "diff", "--name-only", "HEAD")[1].splitlines())
+    loose = untracked(repo)
+    new = {f for f in loose if f in named}
+    return tracked, new, loose - new
+
+
+def work_diff(repo, new):
+    """The whole change as one unified diff: tracked edits plus the new files."""
+    parts = [subprocess.run(["git", "-C", str(repo), "diff", "HEAD"], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL).stdout]
+    parts += [subprocess.run(["git", "diff", "--no-index", "--", "/dev/null", f], cwd=str(repo), capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL).stdout for f in sorted(new)]
+    return "".join(parts)
+
+
+def review_gaps(findings, cids, acids, text):
+    """Step 7 check: every scanner finding, planned change and acceptance criterion is answered."""
+    def missing(title, ids):
+        cells = " ".join(" ".join(r) for r in section_rows(text, title))
+        return [i for i in ids if not re.search(rf"\b{i}\b", cells)]
+    gone = {"Scanner findings": missing("Scanner findings", [f["id"] for f in findings]),
+            "Consistency with the approved design": missing("Consistency with the approved design", cids),
+            "Acceptance criteria check": missing("Acceptance criteria check", acids)}
+    gone = {k: v for k, v in gone.items() if v}
+    return ("The review is missing rows: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in gone.items())
+            + ". Add a row for each. Reply with the complete updated document, same sections.") if gone else ""
+
+
+def pr_gaps(briefs, text):
+    """Step 8 check: a short title, every acceptance criterion mapped, migration notes present, nothing secret."""
+    plan = pathlib.Path(briefs) / "implementation-plan.md"
+    ids = _ids("AC", section(plan.read_text(), "Acceptance criteria")) if plan.exists() else []
+    cells = " ".join(" ".join(r) for r in section_rows(text, "Acceptance criteria mapping"))
+    fix = []
+    title = next((l.strip().lstrip("#").strip() for l in section(text, "Title").splitlines() if l.strip()), "")
+    if not title or len(title) > 72:
+        fix.append("The Title must be one line of at most 72 characters.")
+    if gone := [i for i in ids if not re.search(rf"\b{i}\b", cells)]:
+        fix.append(f"The Acceptance criteria mapping has no row for {', '.join(gone)}.")
+    if not section(text, "Migration and compatibility notes").strip():
+        fix.append("The Migration and compatibility notes are empty. Write 'None' with what was searched, if none.")
+    if any(re.search(rx, text) for _, rx in diffscan.SECRETS) or any(
+            (m := diffscan.CREDENTIAL.search(l)) and not diffscan.PLACEHOLDER.search(m.group(2)) for l in text.splitlines()):
+        fix.append("The text contains something that looks like a secret. Remove it.")
+    return ("\n".join(fix) + " Reply with the complete updated document, same sections.") if fix else ""
+
+
+def bold_lines(text):
+    return re.findall(r"\*\*([^*]+)\*\*", text)
+
+
+def build_review_report(repo, branch, diff, found, model_blockers, reply):
+    blockers = [f for f in found if f["severity"] == "Blocker"]
+    adds = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+    dels = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+    nfiles = len(set(re.findall(r"(?m)^diff --git a/\S+ b/(\S+)", diff)))
+    verdict = (f"Not ready for human review: {len(blockers) + len(model_blockers)} blocker(s)." if blockers or model_blockers
+               else "No blockers found. Ready for human review.")
+    rows = "\n".join(f"| {f['id']} | {f['severity']} | {f['kind']} | `{f['file']}`{':' + str(f['line']) if f['line'] else ''} | "
+                     f"{f['text'].replace('|', '/')} | {f['why']} |" for f in found) or "| none | | | | | |"
+    parts = [
+        f"## Status\nDraft, pending review by the tech lead. **This is a self-review by the system that wrote the change: "
+        f"it is not an independent review and not an approval.** Branch `{branch}` in {repo}. The diff reviewed "
+        f"({nfiles} files, {adds} lines added, {dels} removed) is saved as `change.diff` next to this report.\n\n**{verdict}**",
+        "## Blockers\n" + ("\n".join(f"- {f['id']}, found by the code scan: {f['kind']}, `{f['file']}`: {f['why']}" for f in blockers)
+                           + ("\n" if blockers and model_blockers else "")
+                           + "\n".join(f"- {b}, found by the model review" for b in model_blockers) or "None."),
+        "## Scanner findings from code (plain text matching on the added lines; secrets are masked)\n"
+        "| ID | Severity | Kind | Where | Evidence | Why |\n|---|---|---|---|---|---|\n" + rows,
+        "## The model's review (answers to the scanner findings are in its Scanner findings table)\n" + reply.strip()]
+    return "\n\n".join(parts) + "\n"
+
+
+def final_results(tests_report):
+    """The last check run of a test report: its table lines."""
+    runs = re.split(r"(?m)^Run \d+:\n", section(tests_report, "Results after the test changes"))
+    return "\n".join(l for l in runs[-1].splitlines() if l.startswith("|")) or "Not run."
+
 
 def run_step(name, files, repo=None):
     template, out_name, reviewers, prior = STEPS[name]
@@ -671,6 +780,151 @@ def run_tests(repo, checks=None):
             runs.append(run_checks(repo, commands))
     print("wrote:", out)
 
+def run_review(repo):
+    """Step 7. Read-only. Scans the diff in code, asks the model to review it, and states the verdict from the code."""
+    name = "review"
+    template, out_name, reviewers, prior = STEPS[name]
+    briefs, repo, branch, impl_report = work_context(name, repo)
+    tests_report = (briefs / "test-report.md").read_text()
+    plan_path = briefs / "change-plan.md"
+    if not plan_path.exists():
+        sys.exit(f"{name}: change-plan.md is not in {briefs}: the review compares the diff with it.")
+    changes = parse_changes(plan_path.read_text())
+    tracked, new, loose = work_files(repo, [impl_report, tests_report])
+    changed, diff = sorted(tracked | new), work_diff(repo, new)
+    (briefs / "change.diff").write_text(diff)
+    planned = {p for ch in changes.values() for p, _ in ch["files"]}
+    found = diffscan.scan(diffscan.parse_diff(diff), changed)
+    add = lambda kind, sev, f, why: found.append(dict(kind=kind, severity=sev, file=f, line=0, text=f, why=why))  # noqa: E731
+    for f in changed:
+        if f not in planned and not is_test_path(f):
+            add("Accidental edit", "Blocker", f, "Changed, but not in any change of the approved plan and not a test file.")
+    for f in sorted(loose):
+        add("Accidental edit", "Check", f, "An untracked file is present that no report mentions.")
+    for r in section_rows(impl_report, "Changes"):
+        if re.fullmatch(r"C\d+", r[0]) and len(r) > 1 and r[1] != "Done":
+            add("Plan gap", "Blocker", r[0], f"Change {r[0]} of the approved plan is '{r[1]}' in the implementation report.")
+    if "New failures (passed before" in tests_report:
+        add("Tests", "Blocker", "test-report.md", "Checks that passed before the test changes fail now.")
+    elif "local checks FAILED" in tests_report:
+        add("Tests", "Should fix", "test-report.md", "Local checks fail (they were already failing before the test changes).")
+    elif "were NOT run" in tests_report:
+        add("Tests", "Should fix", "test-report.md", "The local checks were not run, so nothing was verified.")
+    for i, f in enumerate(found, 1):
+        f["id"] = f"D{i}"
+    out = briefs / out_name
+    if out.exists():
+        old = briefs / "history" / f"{out.stem}.{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.md"
+        old.parent.mkdir(exist_ok=True)
+        shutil.copy2(out, old)
+    core.EXTRA_DIRS.extend([str(repo), str(briefs)])
+    head = (PROMPTS / "_rules.md").read_text() + "\n\n" + (PROMPTS / template).read_text()
+    plan_text = (briefs / "implementation-plan.md").read_text()
+    acids = _ids("AC", section(plan_text, "Acceptance criteria"))
+    listing = "\n".join(f"{f['id']} [{f['severity']}] {f['kind']} `{f['file']}`{':' + str(f['line']) if f['line'] else ''}: "
+                        f"{f['text']} ({f['why']})" for f in found) or "(the scan found nothing)"
+    common = (f"\n\nThe diff of the whole change (read it in full): {briefs / 'change.diff'}\nApproved earlier outputs (read them): "
+              + ", ".join(str(briefs / f) for f in ("implementation-plan.md", "change-plan.md", "implementation-report.md",
+                                                    "test-report.md", "repository-inspection.md", "stack-profile.md"))
+              + f"\nRepository, on branch {branch}: {repo}\n\nScanner findings to answer (found by a program, not by you):\n{listing}")
+
+    def review(prompt):
+        reply = ask("coder", prompt)
+        if gap := "\n".join(filter(None, [review_gaps(found, list(changes), acids, reply), false_approval(None, reply),
+                                          nonexistent(reply, repo)])):
+            reply = ask("coder", gap)
+        return reply
+    reply = review(head + common)
+    while True:
+        blockers = [" ".join(r[:1] + r[2:3]) for r in section_rows(reply, "Findings") if len(r) > 2 and r[1].strip() == "Blocker"]
+        out.write_text(build_review_report(repo, branch, diff, found, blockers, reply))
+        print(f"scan: {len(found)} finding(s), {sum(f['severity'] == 'Blocker' for f in found)} blocker(s); "
+              f"model blockers: {len(blockers)}")
+        if signoff(briefs, name, out, reviewers):
+            break
+        reply = review(head + common + f"\n\nHuman feedback on the review: {input('feedback> ')}\nUpdate the review.")
+    print("wrote:", out)
+
+
+def run_pr(repo):
+    """Step 8. Read-only. The model writes the explaining sections; the code adds everything that must be factual."""
+    name = "pr"
+    template, out_name, reviewers, prior = STEPS[name]
+    briefs, repo, branch, impl_report = work_context(name, repo)
+    review, tests = (briefs / "review-report.md").read_text(), (briefs / "test-report.md").read_text()
+    plan_text = (briefs / "implementation-plan.md").read_text()
+    ticket = re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", section(plan_text, "Ticket summary") or plan_text)
+    url = re.search(r"https?://[^\s)>\]]+", plan_text)
+    out = briefs / out_name
+    if out.exists():
+        old = briefs / "history" / f"{out.stem}.{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.md"
+        old.parent.mkdir(exist_ok=True)
+        shutil.copy2(out, old)
+    core.EXTRA_DIRS.extend([str(repo), str(briefs)])
+    head = (PROMPTS / "_rules.md").read_text() + "\n\n" + (PROMPTS / template).read_text()
+    common = ("\n\nApproved earlier outputs (read them): " + ", ".join(str(briefs / f) for f in (
+        "implementation-plan.md", "change-plan.md", "implementation-report.md", "test-report.md", "review-report.md",
+        "change.diff")) + f"\nRepository, on branch {branch}: {repo}")
+
+    def write(prompt):
+        reply = ask("coder", prompt)
+        if gap := "\n".join(filter(None, [pr_gaps(briefs, reply), false_approval(None, reply), claims_qa(reply),
+                                          nonexistent(reply, repo)])):
+            reply = ask("coder", gap)
+        return reply
+
+    reply = write(head + common)
+    ledger = baseline.latest(briefs)
+    while True:
+        title = next((l.strip().lstrip("#").strip() for l in section(reply, "Title").splitlines() if l.strip()), "(no title)")
+        tracked, new, _ = work_files(repo, [impl_report, tests])
+        diff = work_diff(repo, new)
+        added = {}
+        for f, _, _ in diffscan.parse_diff(diff):
+            added[f] = added.get(f, 0) + 1
+        removed = {}
+        for line in git(repo, "diff", "--numstat", "HEAD")[1].splitlines():
+            a, d, f = (line.split("\t") + ["", "", ""])[:3]
+            removed[f] = int(d) if d.isdigit() else 0
+        files = "\n".join(f"| `{f}` | {'test' if is_test_path(f) else 'production'} | {added.get(f, 0)} | {removed.get(f, 0)} |"
+                          for f in sorted(tracked | new)) or "| none | | | |"
+        verdicts = [b for b in bold_lines(section(tests, "Status")) if "development verification" not in b]
+        review_v = [b for b in bold_lines(section(review, "Status")) if "self-review" not in b.lower()]
+        prov = "\n".join(
+            f"| `{f}` | `{ledger[f]['sha256'][:12]}` | {', '.join(r.split(' (')[0] for r in baseline.signed_roles(briefs, f, ledger[f]['sha256']))} |"
+            for f in ("implementation-plan.md", "repository-inspection.md", "stack-profile.md", "change-plan.md",
+                      "implementation-report.md", "test-report.md", "review-report.md") if f in ledger)
+        tid = ticket.group(0) if ticket else None
+        body = "\n\n".join([
+            f"# {title}",
+            "**Ticket:** " + (tid + (f" ({url.group(0)})" if url else "") if tid else
+                              "**NOT STATED in the ticket documents. Add the ticket link before opening this PR.**")
+            + f"\n**Branch:** `{branch}`. Draft description for human reviewers; not approved by anyone yet.",
+            "## Problem\n" + section(reply, "Problem").strip(),
+            "## Implementation summary\n" + section(reply, "Implementation summary").strip(),
+            "## Acceptance criteria mapping\n" + section(reply, "Acceptance criteria mapping").strip(),
+            "## Files changed (from git)\n| File | Kind | Lines added | Lines removed |\n|---|---|---|---|\n" + files,
+            "## Tests run (from the recorded check runs)\n" + ("**" + verdicts[0] + "**\n\n" if verdicts else "")
+            + final_results(tests) + "\n\nThese are development tests and local checks, **not independent QA sign-off**.",
+            "## Review outcome (self-review, not an independent review)\n" + ("**" + review_v[0] + "**\n\n" if review_v else "")
+            + "### Limitations\n" + (section(review, "Limitations").strip() or "Not stated.")
+            + "\n\n### Remaining questions\n" + (section(review, "Remaining questions").strip() or "Not stated."),
+            "## Risks\n" + section(reply, "Risks").strip(),
+            "## Migration and compatibility notes\n" + section(reply, "Migration and compatibility notes").strip(),
+            "## Source documents and approvals\nThe approved documents this change was built from, by content hash and the roles that approved "
+            "them. Attach them or link them from the ticket.\n\n| Document | SHA-256 (first 12) | Approved by |\n|---|---|---|\n" + prov,
+            "## Reviewer checklist\n- [ ] Each acceptance criterion above is really met by the code and a test\n"
+            "- [ ] The files changed are only the files this ticket needs\n- [ ] Run the tests locally; the results above are from the author's machine\n"
+            "- [ ] Migration, configuration and compatibility notes are complete\n- [ ] Open questions in the review outcome are answered",
+            "---\nTo open this pull request (these commands are NOT run by the system; a human runs them):\n```\n"
+            f"git push -u origin {branch}\ngh pr create --title \"{title}\" --body-file {out}\n```"]) + "\n"
+        out.write_text(body)
+        print(f"title: {title}; ticket: {tid or 'NOT STATED'}")
+        if signoff(briefs, name, out, reviewers):
+            break
+        reply = write(head + common + f"\n\nHuman feedback on the description: {input('feedback> ')}\nUpdate it, same sections.")
+    print("wrote:", out)
+
 
 def understand(files, repo=None): run_step("understand", files, repo)  # 1. read, find gaps, plan
 def inspect(files, repo): run_step("inspect", files, repo)             # 2. inspect the repository, evidence-based plan
@@ -678,6 +932,8 @@ def detect(files, repo): run_step("detect", files, repo)               # 3. stac
 def plan(files, repo): run_step("plan", files, repo)                   # 4. bounded change plan, every AC mapped to changes
 def implement(files, repo): run_implement(repo)                       # 5. edit the repo, one planned change at a time
 def tests(files, repo, checks=None): run_tests(repo, checks)          # 6. developer tests, then run the local checks
+def review(files, repo): run_review(repo)                             # 7. review the whole diff before handoff
+def pr(files, repo): run_pr(repo)                                     # 8. prepare the pull request description
 
 
 if __name__ == "__main__":
@@ -697,5 +953,9 @@ if __name__ == "__main__":
         run_implement(repo)
     elif cmd == "tests":
         run_tests(repo, checks)
+    elif cmd == "review":
+        run_review(repo)
+    elif cmd == "pr":
+        run_pr(repo)
     else:
         run_step(cmd, files, repo)
