@@ -71,3 +71,11 @@ def test_a_clean_diff_has_no_findings_and_removed_lines_are_never_scanned():
     assert _scan("x = 1", "def f(a):", "    return a + 1") == []
     diff = "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,1 @@\n-verify=False\n-password = 'hunter2hunter2'\n+ok = 1\n"
     assert d.scan(d.parse_diff(diff), ["a.py"]) == []
+
+
+def test_interface_schema_and_migration_files_are_flagged_for_a_compatibility_check():
+    files = ["api/openapi.yaml", "proto/a.proto", "db/migrations/001_add.sql", "app/schemas/user.json", "schema.graphql", "src/app.py"]
+    found = d.scan([], files)
+    assert [f["file"] for f in found] == files[:5]
+    assert all(f["kind"] == "Interface or data change" and f["severity"] == "Check" for f in found)
+    assert "compatibility" in found[0]["why"]

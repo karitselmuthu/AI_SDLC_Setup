@@ -19,6 +19,9 @@ SENSITIVE_FILES = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*",
                    "credentials*", "*.kdbx", ".npmrc", ".pypirc"]
 DEPENDENCY_FILES = ["package.json", "requirements*.txt", "pyproject.toml", "Pipfile", "go.mod", "Cargo.toml", "pom.xml",
                     "build.gradle*", "Gemfile", "composer.json", "*.lock", "package-lock.json", "yarn.lock", "go.sum"]
+INTERFACE_FILES = ["openapi*.y*ml", "openapi*.json", "swagger*.y*ml", "swagger*.json", "*.graphql", "*.gql", "*.proto",
+                   "asyncapi*.y*ml", "*.avsc", "*.sql", "*.prisma", "alembic.ini", "schema.rb"]
+INTERFACE_DIRS = ("migrations/", "db/migrate/", "schemas/", "/migrations/", "/schemas/")
 UNSAFE = [
     ("TLS verification disabled", r"verify\s*=\s*False|rejectUnauthorized\s*:\s*false|InsecureSkipVerify\s*:\s*true"),
     ("shell=True (command injection risk)", r"shell\s*=\s*True"),
@@ -96,6 +99,9 @@ def scan(added, files=()):
         base = f.rsplit("/", 1)[-1]
         if any(fnmatch.fnmatch(base, p) for p in SENSITIVE_FILES):
             out.append(_hit("Secret", "Blocker", f, 0, f, "A file that normally holds secrets or keys is part of the change."))
+        elif any(fnmatch.fnmatch(base, p) for p in INTERFACE_FILES) or any(d in "/" + f for d in INTERFACE_DIRS):
+            out.append(_hit("Interface or data change", "Check", f, 0, f,
+                            "An interface, schema or migration file changed. Confirm compatibility with consumers and existing data, and that a compatibility test covers it."))
         elif any(fnmatch.fnmatch(base, p) for p in DEPENDENCY_FILES):
             out.append(_hit("Dependency change", "Check", f, 0, f, "A dependency or lock file changed. Confirm the plan allows it."))
     return out

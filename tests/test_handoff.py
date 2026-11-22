@@ -291,3 +291,19 @@ def test_the_verdict_line_counts_should_fix_items_from_the_scan_and_the_model(tm
     _env(tmp_path, monkeypatch, lambda p: review_reply(p, findings="| ID | sev | where | what | why | fix |\n|---|---|---|---|---|---|\n" + row))
     agent.review([], str(repo))
     assert "**No blockers found. Ready for human review. 2 should-fix item(s) for the reviewer to read first.**" in _rep(tmp_path)
+
+
+def test_the_pr_carries_the_stack_coverage_and_gaps_from_the_test_report_so_a_reviewer_sees_what_did_not_run(tmp_path, monkeypatch, repo):
+    cov = ("## Stack coverage (from the code; a check is only PASS or FAIL if it was run)\n\n### Detected stack\n| Stack | Area |\n|---|---|\n| Fake | Backend |\n\n"
+           "### Checks selected (2), run (1), not run (1)\n| Stack | Kind | Command | Outcome |\n|---|---|---|---|\n| Fake | lint | `x` | Not run: `x` is not installed here |\n\n"
+           "### Unsupported technologies\n- Lua (2 files): no adapter\n\n")
+    _pr_env(tmp_path, monkeypatch, repo)
+    t = tmp_path / "briefs/test-report.md"
+    t.write_text(TESTS.replace("## Results before", cov + "## Results before", 1))
+    baseline.log_approval(tmp_path / "briefs", "tests", t, agent.TECH)
+    baseline.log_approval(tmp_path / "briefs", "review", tmp_path / "briefs/review-report.md", agent.TECH)
+    agent.pr([], str(repo))
+    body = (tmp_path / "briefs/pull-request.md").read_text()
+    assert "### Stack coverage (from the code; a check is only PASS or FAIL if it was run)" in body
+    assert "| Fake | lint | `x` | Not run: `x` is not installed here |" in body and "#### Unsupported technologies" in body
+    assert body.index("Stack coverage") < body.index("## Review outcome")

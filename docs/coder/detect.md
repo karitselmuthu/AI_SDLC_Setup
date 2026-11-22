@@ -9,6 +9,7 @@ Rules:
 - Never claim you ran a command or a test. For each command, say where it is defined and write "Read from configuration, not run". Say whether a CI file runs it.
 - Compare versions across files (runtime version files, manifests, lockfiles, CI, Dockerfiles). Where they disagree, report the conflict and do not pick a side.
 - Mark each component honestly. Detected: you read the evidence and it is clear. Uncertain: a version is unpinned, inferred, generated, or conflicts between files. Unsupported: the stack contains something you cannot assess or the repository gives no way to build or test (for example a file type with no known language, or a build tool you cannot read). Unsupported components get no assumed commands or versions, and name the specialist review needed.
+- The "stack adapters" lines in "Detected by the code" name the stacks that the code detected and the technologies with no adapter. Name each detected stack in your tables with its evidence, and list every technology "unsupported by any adapter" under Unsupported or uncertain components. Do not add a stack the evidence does not show, and do not assume checks for an unsupported one.
 - Every file in "Detected by the code" must appear in the Detected files table, and every unrecognised file type must appear under Unsupported or uncertain components.
 
 Reply in markdown with exactly these sections:

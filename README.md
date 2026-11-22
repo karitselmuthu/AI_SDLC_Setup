@@ -158,6 +158,21 @@ and migration notes (checked: title length, a row per criterion, migration secti
 ticket link (or says it is not stated), the files changed with line counts from git, the real check results, the review outcome with its limitations and
 open questions, the approved source documents with content hashes and approvers, and a reviewer checklist. Nothing factual is left to the model.
 
+**Stack adapters (`coder/adapters.py`) select the checks, not a fixed "all technologies" list.** Plain code detects what the repository actually
+uses from its files (never from the model) and offers only that technology's own checks, in check mode: it covers web frontend
+(JavaScript/TypeScript with React, Angular, Vue, Svelte, Next.js, using the repository's own `package.json` scripts and package manager), backend
+services (Python, Java/Spring via Maven or Gradle, C#/.NET, Node.js, Go, Rust, PHP, Ruby), mobile and desktop (Android, Swift, Flutter/Dart, React
+Native, Electron), data and databases (SQL migrations, PostgreSQL, MySQL, SQL Server, Oracle, MongoDB, Redis), data engineering and AI (Python
+pipelines), infrastructure code (Terraform, CloudFormation, CDK, Pulumi, Kubernetes, Helm) and cross-stack interfaces (OpenAPI, GraphQL, protobuf,
+AsyncAPI, shared schemas). A check is chosen only when the repository shows it uses that tool (a config file or a script), and the commands are fixed
+in the code, never taken from a document. Nothing installs, deploys, applies or restores: a check whose tool, installed dependencies or offline
+resolution is missing is **reported as not run, with the reason**. Where no safe automatic check exists (a database to migrate, `cdk synth`,
+`pulumi preview`, an Xcode scheme, permission files, API contracts) it is listed as a manual item or a gap for a person. A language with no adapter,
+or source files with no build file, are reported as **unsupported** and nothing is guessed. Step 3 gets these findings as ground truth, steps 5 and 6
+tell the model which conventions the repository shows, and step 6 writes a **Stack coverage** section: detected stack and evidence, checks
+selected, run and not run (a check is PASS or FAIL only if it really ran), gaps and unsupported technologies. The verdict line says when coverage is
+incomplete and step 8 copies the coverage into the pull request. Step 7 flags changed interface, schema and migration files for a compatibility check.
+
 **The code, not the model, runs the checks** (the agent has no shell). The commands come from the approved stack profile (only recognised check
 runners such as `pytest`, `ruff`, `mypy`, `yarn test`, `go test` or `make test`, matched on the command itself; a command that merely mentions one, like a script that launches a pipeline, is never run; installs, deploys, network, git, `rm` and shell chaining are filtered out) or from `--check CMD`, and the tech lead approves the
 list before anything runs. The checks run once before the model edits (a baseline) and again after, so new failures are told apart from ones that were
@@ -222,6 +237,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_acceptance.py    one test group per acceptance case (see below)
   test_coder.py, test_stack.py, test_implement.py, test_tests_step.py   coding agent, stack scanner, implement and tests-step tests
   test_diffscan.py, test_handoff.py                                     diff scanner, review (step 7) and pull request (step 8)
+  test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```
 

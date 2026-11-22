@@ -273,3 +273,59 @@ def test_the_tool_scope_given_to_the_model_is_test_paths_only(tmp_path, monkeypa
     allow = calls[0][3]
     assert all(a in ("Read", "Grep", "Glob") or a.startswith("Edit(//") for a in allow)
     assert any(a.endswith("/tests/**)") for a in allow) and not any("/src" in a for a in allow)
+
+
+# ---------------------------------------------------------------- stack adapters in the test step ---------------------
+
+def _plan(**over):
+    p = dict(stacks=[dict(name="Fake stack", area="Backend services", evidence=["Makefile"], conventions=[".editorconfig"])],
+             checks=[dict(stack="Fake stack", cat="test", cmd="true", status="runnable", reason=""),
+                     dict(stack="Fake stack", cat="lint", cmd="fakelint .", status="not runnable", reason="`fakelint` is not installed here"),
+                     dict(stack="Fake stack", cat="review", cmd=None, status="manual", reason="permissions need a person")],
+             gaps=[dict(stack="Fake stack", cat="format", reason="no formatting is configured or detectable for this stack")],
+             unsupported=[dict(what="Lua (2 files)", reason="no adapter for this language")], truncated=False)
+    p.update(over)
+    return p
+
+
+def test_adapter_selected_checks_run_and_the_report_says_what_did_not_run_and_why(tmp_path, monkeypatch, repo):
+    monkeypatch.setattr(agent.adapters, "plan", lambda r: _plan())
+    calls, asked = _env(tmp_path, monkeypatch, repo)
+    agent.tests([], str(repo))
+    rep = _report(tmp_path)
+    assert "## Stack coverage" in rep and "| Fake stack | Backend services | Makefile | .editorconfig |" in rep
+    assert "| Fake stack | unit or component tests | `true` | PASS (exit 0) |" in rep
+    assert "| Fake stack | lint or static analysis | `fakelint .` | Not run: `fakelint` is not installed here |" in rep
+    assert "| Fake stack | configuration and permission review | (manual) | Not run: needs a person. permissions need a person |" in rep
+    assert "| Fake stack | formatting | no formatting is configured or detectable for this stack |" in rep
+    assert "- Lua (2 files): no adapter for this language" in rep
+    assert "**All 1 local checks passed. Coverage is not complete: 2 selected check(s) did not run, 1 gap(s), 1 unsupported technology (see Stack coverage).**" in rep
+    assert "$ fakelint" not in " ".join(c[2] for c in calls) and "`fakelint .`" not in rep.split("## Local checks run")[1].split("##")[0]  # never run, never listed as run
+    assert "Detected stack (by the code" in calls[0][2] and "No adapter exists for: Lua (2 files)" in calls[0][2]  # conventions reach the model
+
+
+def test_a_given_check_replaces_the_selection_and_the_report_says_so(tmp_path, monkeypatch, repo):
+    monkeypatch.setattr(agent.adapters, "plan", lambda r: _plan())
+    _env(tmp_path, monkeypatch, repo)
+    agent.tests([], str(repo), ["true && true"])
+    rep = _report(tmp_path)
+    assert "| Fake stack | unit or component tests | `true` | Not run: replaced by the --check commands given |" in rep
+    assert "| `true && true` | PASS (exit 0) |" in rep
+
+
+def test_declining_the_list_leaves_every_selected_check_not_run(tmp_path, monkeypatch, repo):
+    monkeypatch.setattr(agent.adapters, "plan", lambda r: _plan())
+    _env(tmp_path, monkeypatch, repo, approve=lambda who: who.startswith("Tech lead approves running") is False)
+    agent.tests([], str(repo))
+    rep = _report(tmp_path)
+    assert "Local checks were NOT run (not approved)." in rep and "PASS" not in rep.split("## Stack coverage")[1].split("## Results before")[0].replace("only PASS or FAIL", "")
+    assert "Not run: the list was not approved" in rep
+
+
+def test_a_failing_adapter_check_is_reported_fail_and_the_summary_still_says_coverage_is_incomplete(tmp_path, monkeypatch, repo):
+    bad = _plan(checks=[dict(stack="Fake stack", cat="test", cmd="false", status="runnable", reason="")])
+    monkeypatch.setattr(agent.adapters, "plan", lambda r: bad)
+    _env(tmp_path, monkeypatch, repo)
+    agent.tests([], str(repo))
+    rep = _report(tmp_path)
+    assert "| Fake stack | unit or component tests | `false` | FAIL (exit 1) |" in rep and "1 of 1 local checks FAILED" in rep
