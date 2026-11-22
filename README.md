@@ -35,18 +35,18 @@ Run them in order. Each step reads the earlier outputs from `architect/briefs/` 
 
 | # | Command | What you pass | Output in `architect/briefs/` | Reviewer |
 |---|---|---|---|---|
-| 1 | `qualify` | RFP, questionnaire, notes, account brief | `opportunity-brief.md` | Pursuit lead |
-| 2 | `discover` | Same documents | `requirements.md` | Product owner |
-| 3 | `assess` | Diagrams, inventories, standards | `current-state.md` | Tech lead |
-| 4 | `options` | Nothing extra | `solution-options.md` | Tech lead, pursuit lead |
-| 5 | `design` | Nothing extra | `target-architecture.md` | Tech lead |
-| 6 | `fit` | Client standards, policies, contracts | `enterprise-fit.md` | Security, compliance, enterprise architecture |
-| 7 | `delivery` | Nothing extra | `delivery-approach.md` | Delivery lead, pursuit lead |
-| 8 | `economics` | Spend, price lists, rate card, headcounts | `rom-estimate.md` | Delivery lead, finance, pursuit lead |
-| 9 | `proposal` | Bidder profile, credentials, references | `proposal-package.md` | Bid manager, delivery lead, pursuit lead (each signs separately) |
-| 10a | `discuss` | Nothing extra | `discussion-pack.md` | Bid manager, pursuit lead |
-| 10b | `record` | Notes from the client meeting | `opportunity-record.md` | Bid manager |
-| 11 | `handoff` | Nothing extra | `solution-baseline.md`, then `architect/baseline/vN/` | Account lead, delivery lead, architecture lead (each signs separately) |
+| 1 | `qualify` | RFP, questionnaire, notes, account brief | `opportunity-brief.md` | Account lead |
+| 2 | `discover` | Same documents | `requirements.md` | Account lead, lead architect |
+| 3 | `assess` | Diagrams, inventories, standards | `current-state.md` | Lead architect |
+| 4 | `options` | Nothing extra | `solution-options.md` | Lead architect, account lead |
+| 5 | `design` | Nothing extra | `target-architecture.md` | Lead architect |
+| 6 | `fit` | Client standards, policies, contracts | `enterprise-fit.md` | Lead architect, security, compliance |
+| 7 | `delivery` | Nothing extra | `delivery-approach.md` | Delivery lead, account lead |
+| 8 | `economics` | Spend, price lists, rate card, headcounts | `rom-estimate.md` | Delivery lead, finance, account lead |
+| 9 | `proposal` | Bidder profile, credentials, references | `proposal-package.md` | Account lead, lead architect, delivery lead, security, legal, finance (each signs separately) |
+| 10a | `discuss` | Nothing extra | `discussion-pack.md` | Account lead, lead architect |
+| 10b | `record` | Notes from the client meeting | `opportunity-record.md` | Account lead |
+| 11 | `handoff` | Nothing extra | `solution-baseline.md`, then `architect/baseline/vN/` | Account lead, lead architect, delivery lead (each signs separately) |
 
 `record` reads its own previous version, so decisions accumulate across meetings.
 After a meeting, the record lists which earlier steps are now outdated. Re-run those and approve them again.
@@ -89,7 +89,7 @@ The coverage checks are plain code, not prompts. For example, the design must tr
 ## Approvals and the baseline
 
 Every approval is appended to `architect/briefs/approvals.log` with a hash of the approved file and the role that approved it.
-The proposal and the handoff each need **three separate approvals** (proposal: bid manager, delivery lead, pursuit lead; handoff: account lead, delivery lead, architecture lead). They are asked one by one, and a "no" from any of them sends the draft back and restarts the round. An approval only counts for the exact content it was given on.
+Every step lists its reviewers by role and each role approves **separately**, never one "y" for a group. The four checkpoint groups are the account lead (opportunity fit, client messaging, commitments), the lead solution architect (technical correctness, standards fit, exceptions), the delivery lead (feasibility, staffing, schedule, estimate assumptions) and the security, compliance, legal and finance reviewers (their obligations and commitments). The proposal needs all six roles; the handoff needs account lead, lead architect and delivery lead. They are asked one by one, and a "no" from any of them sends the draft back and restarts the round. An approval only counts for the exact content it was given on.
 `handoff` refuses to run until every artifact is produced, approved by all its required roles, **unedited since approval**, and not **stale** (an earlier step approved again after it).
 When it passes, it writes `architect/baseline/vN/`: a read-only copy of every approved artifact, the handoff document, and a `manifest.json` (status `approved`) with hashes, every approver and the source documents. The solution is never marked final before that.
 Versions are never overwritten. A new run publishes `v2`, and the handoff document explains what changed.

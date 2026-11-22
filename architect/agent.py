@@ -26,41 +26,48 @@ core.AGENTS["architect"] = dict(
     tools=core.RO,  # read-only: no edit, write or shell. Read also opens PDFs and images (diagrams).
 )
 
+# Human checkpoints: each role approves separately, so no one approves on behalf of a group.
+ACCOUNT = "Account lead (opportunity fit, client messaging, proposal commitments)"
+ARCH = "Lead solution architect (technical correctness, standards fit, exceptions)"
+DELIVERY = "Delivery lead (feasibility, staffing, schedule, estimate assumptions)"
+SECURITY = "Security reviewer (security obligations and commitments)"
+COMPLIANCE = "Compliance reviewer (compliance obligations and commitments)"
+LEGAL = "Legal reviewer (legal obligations and commitments)"
+FINANCE = "Finance reviewer (financial obligations and commitments)"
+
 # step -> (prompt template, output file in briefs/, human reviewer, earlier outputs to feed in). Add a row per step.
 STEPS = {
-    "qualify": ("qualify.md", "opportunity-brief.md", "Pursuit lead reviews the opportunity brief", []),
-    "discover": ("discover.md", "requirements.md", "Product owner approves the requirements",
+    "qualify": ("qualify.md", "opportunity-brief.md", [ACCOUNT], []),
+    "discover": ("discover.md", "requirements.md", [ACCOUNT, ARCH],
                  ["opportunity-brief.md"]),
-    "assess": ("assess.md", "current-state.md", "Tech lead confirms the current-state view",
+    "assess": ("assess.md", "current-state.md", [ARCH],
                ["opportunity-brief.md", "requirements.md"]),
-    "options": ("options.md", "solution-options.md", "Tech lead and pursuit lead review the options and recommendation",
+    "options": ("options.md", "solution-options.md", [ARCH, ACCOUNT],
                 ["opportunity-brief.md", "requirements.md", "current-state.md"]),
-    "design": ("design.md", "target-architecture.md", "Tech lead signs off on the target architecture",
+    "design": ("design.md", "target-architecture.md", [ARCH],
                ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md"]),
-    "fit": ("fit.md", "enterprise-fit.md", "Security, compliance and enterprise architecture reviewers assess the fit",
+    "fit": ("fit.md", "enterprise-fit.md", [ARCH, SECURITY, COMPLIANCE],
             ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
              "target-architecture.md"]),
-    "delivery": ("delivery.md", "delivery-approach.md", "Delivery lead and pursuit lead review the roadmap and responsibilities",
+    "delivery": ("delivery.md", "delivery-approach.md", [DELIVERY, ACCOUNT],
                  ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                   "target-architecture.md", "enterprise-fit.md"]),
-    "economics": ("economics.md", "rom-estimate.md", "Delivery lead, finance and pursuit lead validate the estimate",
+    "economics": ("economics.md", "rom-estimate.md", [DELIVERY, FINANCE, ACCOUNT],
                   ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                    "target-architecture.md", "enterprise-fit.md", "delivery-approach.md"]),
     "proposal": ("proposal.md", "proposal-package.md",
-                 ["Bid manager reviews the proposal before release", "Delivery lead reviews the proposal before release",
-                  "Pursuit lead reviews the proposal before release"],  # a list: every role must approve, one by one
+                 [ACCOUNT, ARCH, DELIVERY, SECURITY, LEGAL, FINANCE],  # every role approves, one by one
                  ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                   "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md"]),
-    "discuss": ("discuss.md", "discussion-pack.md", "Bid manager and pursuit lead approve the meeting pack",
+    "discuss": ("discuss.md", "discussion-pack.md", [ACCOUNT, ARCH],
                 ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                  "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md",
                  "proposal-package.md"]),
-    "record": ("record.md", "opportunity-record.md", "Bid manager confirms the record of decisions and follow-ups",
+    "record": ("record.md", "opportunity-record.md", [ACCOUNT],
                ["opportunity-brief.md", "requirements.md", "delivery-approach.md", "proposal-package.md",
                 "discussion-pack.md"]),
     "handoff": ("handoff.md", "solution-baseline.md",
-                ["Account lead approves the baseline for handoff", "Delivery lead approves the baseline for handoff",
-                 "Architecture lead approves the baseline for handoff"],
+                [ACCOUNT, ARCH, DELIVERY],
                 ["opportunity-brief.md", "requirements.md", "current-state.md", "solution-options.md",
                  "target-architecture.md", "enterprise-fit.md", "delivery-approach.md", "rom-estimate.md",
                  "proposal-package.md", "discussion-pack.md", "opportunity-record.md"]),

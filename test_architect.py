@@ -518,13 +518,18 @@ def test_handoff_repairs_a_missing_requirement_or_follow_up(tmp_path, monkeypatc
     (tmp_path / "briefs/requirements.md").write_text("R-001 R-002")
     (tmp_path / "briefs/opportunity-record.md").write_text("F1 F2")
     from architect import baseline
+
+    def sign(step, f):  # every required role signs the current content
+        rev = agent.STEPS[step][2]
+        for role in [rev] if isinstance(rev, str) else rev:
+            baseline.log_approval(tmp_path / "briefs", step, tmp_path / "briefs" / f, role)
     for step, f in (("discover", "requirements.md"), ("record", "opportunity-record.md")):
-        baseline.log_approval(tmp_path / "briefs", step, tmp_path / "briefs" / f, "reviewer")
+        sign(step, f)
     # re-approve the dependants in order so the set is consistent again
     for step, (_, out, _, _) in agent.STEPS.items():
         if step not in ("handoff", "qualify", "discover", "record"):
-            baseline.log_approval(tmp_path / "briefs", step, tmp_path / "briefs" / out, "reviewer")
-    baseline.log_approval(tmp_path / "briefs", "record", tmp_path / "briefs/opportunity-record.md", "reviewer")
+            sign(step, out)
+    sign("record", "opportunity-record.md")
     replies = iter(["covers R-001 and F1 only", "covers R-001 R-002 F1 F2"])
     monkeypatch.setattr(agent, "ask", lambda a, p: prompts.append(p) or next(replies))
     agent.handoff([])

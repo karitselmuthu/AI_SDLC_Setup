@@ -226,7 +226,7 @@ def test_case17_injected_document_is_flagged_warned_repaired_and_cannot_approve(
     assert "approved or final" in prompts[1] and "Source-" in prompts[1]  # both defects repaired in one pass
     assert "Status: Approved" not in (tmp_path / "briefs/opportunity-brief.md").read_text()
     assert "WARNING" in capsys.readouterr().out  # the human reviewer is told
-    assert asked == [agent.STEPS["qualify"][2]]  # a human still had to approve; the document could not do it
+    assert asked == agent.STEPS["qualify"][2]  # a human still had to approve; the document could not do it
     lines = (tmp_path / "briefs/approvals.log").read_text().splitlines()
     assert len(lines) == 1 and json.loads(lines[0])["reviewer"] == asked[0]
 
@@ -239,25 +239,32 @@ def test_case17_the_agent_is_told_documents_are_untrusted_and_has_no_way_to_act(
 
 
 # 18. Human approval gate: not approved or final until the account, delivery and architecture reviewers approve
-def test_case18_handoff_needs_account_delivery_and_architecture_reviewers():
-    roles = " | ".join(agent.STEPS["handoff"][2])
-    assert all(r in roles for r in ("Account lead", "Delivery lead", "Architecture lead"))
-    assert len(agent.STEPS["handoff"][2]) == 3 and len(agent.STEPS["proposal"][2]) == 3
+def test_case18_handoff_needs_account_architecture_and_delivery_reviewers():
+    assert agent.STEPS["handoff"][2] == [agent.ACCOUNT, agent.ARCH, agent.DELIVERY]
+
+
+def test_checkpoints_every_named_role_signs_where_it_has_obligations():
+    prop = agent.STEPS["proposal"][2]
+    for role in (agent.ACCOUNT, agent.ARCH, agent.DELIVERY, agent.SECURITY, agent.LEGAL, agent.FINANCE):
+        assert role in prop  # the proposal carries commitments, so all six sign
+    assert {agent.SECURITY, agent.COMPLIANCE, agent.ARCH} <= set(agent.STEPS["fit"][2])
+    assert {agent.DELIVERY, agent.FINANCE, agent.ACCOUNT} <= set(agent.STEPS["economics"][2])
+    assert all(not isinstance(v[2], str) for v in agent.STEPS.values())  # never one "y" for a group
 
 
 def test_case18_each_reviewer_signs_separately_and_a_refusal_sends_it_back(tmp_path, monkeypatch):
-    answers = iter([True, False, True, True, True])  # 1st reviewer yes, 2nd no -> redraft -> all three yes
+    roles = agent.STEPS["proposal"][2]
+    answers = iter([True, False] + [True] * len(roles))  # 1st yes, 2nd no -> redraft -> every role yes
     asked = []
     drafts = iter(["draft one", "draft two"])
     doc, prompts = _env(tmp_path, monkeypatch, reply=lambda p: next(drafts),
                         approve=lambda who: asked.append(who) or next(answers))
     monkeypatch.setattr("builtins.input", lambda _: "make it shorter")
     agent.proposal([str(doc)])
-    roles = agent.STEPS["proposal"][2]
-    assert asked == [roles[0], roles[1], roles[0], roles[1], roles[2]]  # a refusal restarts the round
+    assert asked == [roles[0], roles[1]] + roles  # a refusal restarts the round
     briefs = tmp_path / "briefs"
     final = baseline.sha256(briefs / "proposal-package.md")
-    assert baseline.signed_roles(briefs, "proposal-package.md", final) == roles  # all three on the final draft
+    assert baseline.signed_roles(briefs, "proposal-package.md", final) == roles  # all on the final draft
     assert "make it shorter" in prompts[1]
 
 
