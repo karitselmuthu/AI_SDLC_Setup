@@ -267,3 +267,46 @@ def test_the_step_is_registered_with_a_reviewer_role_and_depends_on_the_pull_req
     assert out == "handoff-package.md" and prior == ["pull-request.md"] and reviewers == [handoff.REVIEWER]
     assert "makes the merge decision" in handoff.REVIEWER and "handoff" in agent.NEEDS_REPO
     assert "[--no-decision]" in agent.__doc__ and "calls no model" in agent.__doc__
+
+
+# ---------------------------------------------------------------- found by a real run: a hollow model reply -----------
+
+def test_a_model_that_returns_nothing_usable_stops_every_step_and_writes_no_document(tmp_path, monkeypatch, repo):
+    for junk in ("", "   \n", "You've hit your usage limit. It resets at 5pm.", "I cannot help with that."):
+        tmp = tmp_path / f"t{abs(hash(junk))}"
+        tmp.mkdir()
+        TH._env(tmp, monkeypatch, lambda p, j=junk: j, signed=("implement", "tests"))
+        for step, out in (("review", "review-report.md"), ("tests", "test-report.md")):
+            before = (tmp / "briefs" / out).exists()
+            with pytest.raises(SystemExit) as e:
+                getattr(agent, step)([], str(repo))
+            assert "returned no usable document" in str(e.value) and (tmp / "briefs" / out).exists() == before
+
+
+def test_the_pr_step_does_not_write_a_hollow_description_when_the_model_fails(tmp_path, monkeypatch, repo):
+    TH._pr_env(tmp_path, monkeypatch, repo, reply="Claude usage limit reached.")
+    with pytest.raises(SystemExit) as e:
+        agent.pr([], str(repo))
+    assert "returned no usable document" in str(e.value) and "usage limit reached" in str(e.value)
+    assert not (tmp_path / "briefs/pull-request.md").exists()
+
+
+def test_the_understand_inspect_and_other_read_steps_also_refuse_an_empty_reply(tmp_path, monkeypatch):
+    import test_coder as TC
+    ticket, prompts = TC._env(tmp_path, monkeypatch, reply="")
+    with pytest.raises(SystemExit) as e:
+        agent.understand([str(ticket)])
+    assert "returned no usable document" in str(e.value) and not (tmp_path / "briefs/implementation-plan.md").exists()
+
+
+def test_the_handoff_refuses_a_hollow_pull_request_description_instead_of_reporting_none(tmp_path, monkeypatch, repo):
+    b = chain(tmp_path, monkeypatch, repo)
+    hollow = (b / "pull-request.md").read_text().replace("## Problem\nReviewers cannot see the steps.", "## Problem\n").replace("# List the agent steps", "# (no title)", 1)
+    (b / "pull-request.md").write_text(hollow)
+    for role in agent.STEPS["pr"][2]:
+        baseline.log_approval(b, "pr", b / "pull-request.md", role)  # even if a person approved it, the handoff will not build on it
+    with pytest.raises(SystemExit) as e:
+        agent.run_handoff(repo, decide=False)
+    assert "pull-request.md is incomplete (no title; empty section: Problem" in str(e.value) and not (b / "handoff-package.md").exists()
+    full = (tmp_path / "briefs/pull-request.md").read_text().replace("| AC2 |", "| ACX |")
+    assert "no row for AC2 in the acceptance criteria mapping" in agent.pr_incomplete(b, full)
