@@ -19,6 +19,7 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -32,6 +33,8 @@ sys.path.insert(0, str(ROOT))
 from architect import agent as architect_agent, baseline  # noqa: E402
 from coder import agent as coder_agent, handoff  # noqa: E402
 from qa import agent as qa_agent  # noqa: E402
+import skipplan  # noqa: E402
+from coder import adapters  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
 MODS = {"architect": architect_agent, "coder": coder_agent, "qa": qa_agent}
@@ -169,14 +172,80 @@ def steps_status(pid, agent):
         ready = not baseline.problems(briefs, {s: v for s, v in mod.STEPS.items() if v[1] in prior})
         sha = baseline.latest(briefs).get(file, {}).get("sha256")
         signed = baseline.signed_roles(briefs, file, sha) if sha and (briefs / file).exists() and baseline.sha256(briefs / file) == sha else []
+        sk = baseline.skipped(briefs, file) if code == "approved" else None
+        if sk:
+            code, text = "skipped", f"Skipped by {sk['reviewer'][len('SKIPPED by '):]}: {sk['reason']}"
+        skippable = name in skipplan.SKIPPABLE.get(agent, []) and code in ("todo", "draft", "partial", "edited", "stale")
         out.append(dict(name=name, label=LABELS[agent][name], file=file, status=code, text=text, ready=ready, produced=(briefs / file).exists(),
-                        roles=[dict(role=r, approved=r in signed) for r in roles]))
+                        roles=[dict(role=r, approved=r in signed) for r in roles], skippable=skippable,
+                        suggest=suggestion(pid, agent, name) if skippable and ready and code == "todo" else ""))
     return out
+
+
+_SUG = {}  # (pid, agent, step) -> (time, reason): the rules read files and scan a repository, so do not repeat that on every poll
+
+
+def context(pid, agent):
+    p, d = load(pid), pdir(pid)
+    rd = lambda f: (f.read_text() if f.exists() else "")
+    ctx = dict(src="\n".join(rd(d / "inputs" / x["name"]) for x in p["docs"] if x["kind"] == "source"),
+               meetings=sum(x["kind"] == "meeting" for x in p["docs"]))
+    if agent == "coder" and p["repo"] and pathlib.Path(p["repo"]).is_dir():
+        pl = adapters.plan(p["repo"])
+        ctx.update(stacks=[x["name"] for x in pl["stacks"]], gaps=pl["gaps"], unsupported=pl["unsupported"])
+    if agent == "qa":
+        qb = d / "qa" / "briefs"
+        ctx["scope"] = rd(qb / "test-scope.md") + rd(qb / "risk-plan.md") if (qb / "test-scope.md").exists() else None
+        ctx["high"] = bool(re.search(r"\bHigh\b", rd(qb / "risk-plan.md")))
+        if p["repo"] and pathlib.Path(p["repo"]).is_dir():
+            r = p["repo"]
+            files = set(qa_agent.C.git(r, "diff", "--name-only", "HEAD")[1].splitlines()) | qa_agent.C.untracked(r)
+            lines = sum(len((pathlib.Path(r) / f).read_text(errors="ignore").splitlines()) for f in files if (pathlib.Path(r) / f).is_file())
+            ctx["changed"] = (len(files), lines)
+    return ctx
+
+
+def suggestion(pid, agent, step):
+    key, now = (pid, agent, step), time.time()
+    if key in _SUG and now - _SUG[key][0] < 20:
+        return _SUG[key][1]
+    try:
+        reason = skipplan.suggest(agent, step, context(pid, agent))
+    except Exception:  # a suggestion must never break the page
+        reason = ""
+    _SUG[key] = (now, reason)
+    return reason
+
+
+def skip(pid, data):
+    """A person confirms that a step is not needed. Code writes the placeholder and pins it in the ledger; no model runs."""
+    agent, step = data.get("agent"), data.get("step")
+    name, reason = (data.get("name") or "").strip(), (data.get("reason") or "").strip()
+    if step not in skipplan.SKIPPABLE.get(agent, []):
+        raise ValueError("This step cannot be skipped.")
+    if len(name) < 2 or len(reason) < 8:
+        raise ValueError("Give your name and a reason (a sentence) for skipping this step.")
+    if MANAGER.active(pid):
+        raise ValueError("A step is running for this project. Answer it or stop it first.")
+    st = next(x for x in steps_status(pid, agent) if x["name"] == step)
+    if not st["ready"]:
+        raise ValueError("An earlier step must be approved first.")
+    mod, briefs = MODS[agent], pdir(pid) / agent / "briefs"
+    out = briefs / mod.STEPS[step][1]
+    briefs.mkdir(parents=True, exist_ok=True)
+    if out.exists():  # whatever was there is kept
+        (briefs / "history").mkdir(exist_ok=True)
+        shutil.copy2(out, briefs / "history" / f"{out.stem}.{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.md")
+    rule = st["suggest"] or skipplan.suggest(agent, step, context(pid, agent))
+    out.write_text(skipplan.placeholder(step, name, reason, rule, datetime.now(timezone.utc).strftime("%Y-%m-%d")))
+    baseline.log_skip(briefs, step, out, name, reason)
+    _SUG.clear()
+    return {"skipped": step}
 
 
 def next_step(pid, agent):
     for s in steps_status(pid, agent):
-        if s["status"] != "approved":
+        if s["status"] not in ("approved", "skipped"):
             return s["name"] if s["ready"] else None
     return None
 
@@ -313,6 +382,10 @@ class Manager:
 
     def finished(self, run):
         if run.auto and run.state == "done" and (step := next_step(run.pid, run.agent)):
+            if why := next(x["suggest"] for x in steps_status(run.pid, run.agent) if x["name"] == step):
+                with LOCK:
+                    run.log.append(f"[auto] paused before {step}: it may not be needed ({why}) Skip it or run it from the page.")
+                return
             try:
                 self.start(run.pid, run.agent, step, auto=True)
             except ValueError as e:
@@ -332,7 +405,8 @@ def project_view(pid):
         for s in st:
             if r and r["agent"] == agent and r["step"] == s["name"] and r["state"] in ("running", "awaiting"):
                 s["status"], s["text"] = ("needs_you", "Needs you: " + r["pending"]["role"]) if r["pending"] else ("running", "Running")
-        tracks[agent] = dict(steps=st, approved=sum(s["status"] == "approved" for s in st), total=len(st), next=next_step(pid, agent))
+        tracks[agent] = dict(steps=st, approved=sum(s["status"] == "approved" for s in st), skipped=sum(s["status"] == "skipped" for s in st),
+                             total=len(st), next=next_step(pid, agent))
     hand = None
     cb = pdir(pid) / "coder" / "briefs"
     if (cb / "handoff-package.md").exists():
@@ -437,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path).path
             if u == "/api/projects":
                 return self._send(200, create(data))
-            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision)", u)
+            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision|skip)", u)
             if not m:
                 return self._send(404, {"error": "Not found."})
             pid, act = m.groups()
@@ -446,6 +520,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, add_doc(pid, data))
             if act == "settings":
                 return self._send(200, settings(pid, data))
+            if act == "skip":
+                return self._send(200, skip(pid, data))
             if act == "run":
                 agent = data.get("agent")
                 step = data.get("step") if data.get("step") not in (None, "next") else (next_step(pid, agent) if agent in MODS else None)

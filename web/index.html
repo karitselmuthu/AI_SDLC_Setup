@@ -30,7 +30,7 @@ ul.plist li button.on{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--
 ol.steps{list-style:none;margin:0;padding:0}
 ol.steps li{border-top:1px solid var(--line);padding:9px 0;display:grid;grid-template-columns:1fr auto;gap:4px 10px}
 .name{font-weight:600}.chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;white-space:nowrap}
-.s-approved{background:var(--okbg);color:var(--ok)}.s-needs_you{background:var(--warnbg);color:var(--warn);font-weight:600}.s-running{background:var(--runbg);color:var(--run)}
+.s-skipped{background:var(--midbg);color:var(--mid);font-style:italic}.s-approved{background:var(--okbg);color:var(--ok)}.s-needs_you{background:var(--warnbg);color:var(--warn);font-weight:600}.s-running{background:var(--runbg);color:var(--run)}
 .s-draft,.s-partial{background:var(--midbg);color:var(--mid)}.s-edited,.s-stale,.s-failed{background:var(--badbg);color:var(--bad)}.s-todo{background:var(--todobg);color:var(--todo)}
 .roles{font-size:12px;color:var(--mute)}.roles b{color:var(--ok);font-weight:600}
 .doc{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px 14px;background:var(--bg);font-size:14px}
@@ -116,14 +116,17 @@ function render(){const p=view.project;document.title=(view.run&&view.run.pendin
  track("Architect","architect",$("tArchitect"),busy);track("Coder","coder",$("tCoder"),busy);track("QA","qa",$("tQa"),busy);needs();banner();handoffCard();
  $("log").textContent=view.run&&view.run.log.length?view.run.log.join("\n"):"Nothing has run yet.";$("log").scrollTop=1e9}
 function track(title,agent,el,busy){const t=view.tracks[agent];const nxt=t.next;
- el.replaceChildren(h("div",{class:"row"},h("h2",{class:"grow",style:"margin:0"},`${title} (${t.approved} of ${t.total} approved)`)),
-  h("div",{class:"bar"},h("i",{style:`width:${100*t.approved/t.total}%`})),
+ el.replaceChildren(h("div",{class:"row"},h("h2",{class:"grow",style:"margin:0"},`${title} (${t.approved} of ${t.total} approved${t.skipped?`, ${t.skipped} skipped`:""})`)),
+  h("div",{class:"bar"},h("i",{style:`width:${100*(t.approved+t.skipped)/t.total}%`})),
   h("div",{class:"row"},h("button",{class:"primary",disabled:busy||!nxt,onclick:()=>run(agent,"next",false)},"Run next step"),h("button",{disabled:busy||!nxt,onclick:()=>run(agent,"next",true),title:"Runs each step in turn and pauses whenever it needs your approval"},"Run all"),h("button",{class:"danger",disabled:!busy||view.run.agent!==agent,onclick:stop},"Stop")),
   h("ol",{class:"steps"},t.steps.map((s,i)=>h("li",{},
-   h("div",{},h("span",{class:"name"},`${i+1}. ${s.label} `),h("span",{class:"chip s-"+s.status},s.text),h("div",{class:"roles"},"Approvals: ",s.roles.map((r,k)=>[k?"; ":"",r.approved?h("b",{},"✓ "+r.role.split(" (")[0]):r.role.split(" (")[0]]))),
-   h("div",{class:"row"},h("button",{disabled:busy||!s.ready,title:s.ready?"":"An earlier step must be approved first",onclick:()=>run(agent,s.name,false)},s.status==="todo"?"Run":"Run again"),h("button",{disabled:!s.produced,onclick:()=>openDoc(agent,s)},"View")))))
+   h("div",{},h("span",{class:"name"},`${i+1}. ${s.label} `),h("span",{class:"chip s-"+s.status},s.text),...(s.suggest?[h("div",{class:"roles",style:"color:var(--warn)"},"Suggested skip: "+s.suggest)]:[]),h("div",{class:"roles"},"Approvals: ",s.roles.map((r,k)=>[k?"; ":"",r.approved?h("b",{},"✓ "+r.role.split(" (")[0]):r.role.split(" (")[0]]))),
+   h("div",{class:"row"},...(s.skippable?[h("button",{disabled:busy||!s.ready,title:"Leave this step out; you are asked for your name and a reason, and it is recorded",onclick:()=>skip(agent,s)},"Skip…")]:[]),h("button",{disabled:busy||!s.ready,title:s.ready?"":"An earlier step must be approved first",onclick:()=>run(agent,s.name,false)},s.status==="todo"?"Run":"Run again"),h("button",{disabled:!s.produced,onclick:()=>openDoc(agent,s)},"View")))))
  )}
 async function run(agent,step,auto){try{await api("POST",`/api/projects/${cur}/run`,{agent,step,auto});await refresh()}catch(e){alert(e.message)}}
+async function skip(agent,s){const name=prompt(`Skip "${s.label}"? Your name (it is recorded):`);if(!name)return;
+ const reason=prompt("Why is this step not needed? (recorded with your name)",s.suggest||"");if(!reason)return;
+ try{await api("POST",`/api/projects/${cur}/skip`,{agent,step:s.name,name,reason});await refresh()}catch(e){alert(e.message)}}
 async function stop(){await api("POST",`/api/projects/${cur}/stop`,{});await refresh()}
 async function openDoc(agent,s){const d=await api("GET",`/api/projects/${cur}/doc?agent=${agent}&file=${encodeURIComponent(s.file)}`);$("dlgTitle").textContent=s.label+" ("+s.file+")";$("dlgBody").innerHTML=md(d.text);$("dlg").showModal()}
 $("dlgClose").onclick=()=>$("dlg").close();

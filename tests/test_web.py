@@ -249,7 +249,7 @@ def test_each_role_is_asked_separately_and_the_status_shows_who_is_still_needed(
 
 
 def test_run_all_goes_step_by_step_and_pauses_for_every_approval(web):
-    pid = new(web)
+    pid = new(web, desc="Our current legacy system has a budget of 50k and 2000 users. " * 60)  # a rich input: no step is suggested for skipping
     run(web, pid, auto=True)
     answered = 0
     while answered < 3:
@@ -447,3 +447,14 @@ def test_the_qa_track_has_ten_steps_runs_from_the_page_and_is_given_the_ticket_a
     awaiting(web, pid)
     web("POST", f"/api/projects/{pid}/respond", dict(answer="y"))
     assert "Developer" in wait(lambda: (lambda v: v["run"]["pending"]["role"] if v["run"]["pending"] and "Developer" in v["run"]["pending"]["role"] else None)(view(web, pid)))
+
+
+def test_run_all_pauses_before_a_step_that_may_not_be_needed(web):
+    pid = new(web)  # a thin input: 'assess' is suggested for skipping
+    run(web, pid, auto=True)
+    for _ in range(2 + 1):  # qualify (1 role), discover (2 roles)
+        awaiting(web, pid)
+        web("POST", f"/api/projects/{pid}/respond", dict(answer="y"))
+        time.sleep(0.3)
+    v = wait(lambda: (lambda v: v if v["run"]["state"] == "done" and any("[auto] paused before assess" in l for l in v["run"]["log"]) else None)(view(web, pid)))
+    assert step(v, "architect", "assess")["status"] == "todo" and step(v, "architect", "assess")["suggest"]

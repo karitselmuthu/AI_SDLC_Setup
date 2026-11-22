@@ -429,6 +429,7 @@ def recommendation(briefs):
     rd = lambda f: (briefs / f).read_text() if (briefs / f).exists() else ""
     passed, failed, flaky, blocked, notrun = counts(rd("execution-report.md"))
     openh = open_defects(rd("defect-report.md"))
+    skipped = [f for f in ("exploration-report.md", "nonfunctional-report.md") if rd(f).startswith("## Status\nSkipped.")]
     gaps = [r[0] for r in C.section_rows(rd("nonfunctional-report.md"), "Non-functional quality")[1:] if r and "Gap" in " ".join(r)]
     high = [r for r in C.section_rows(rd("risk-plan.md"), "Risk assessment")[1:] if r and re.search(r"\bHigh\b", " ".join(r))]
     cases = re.findall(r"\bTC\d+\b", C.section(rd("test-cases.md"), "Test cases"))
@@ -442,7 +443,8 @@ def recommendation(briefs):
          + ("\n" + "\n".join(f"- Open defect {r[0]}" for r in openh) if openh else ""),
          "## Waived or not-run tests\n" + (f"{blocked} check(s) blocked and {notrun} not run (see the execution report). " if blocked or notrun else "None recorded. ")
          + "Any waiver must be named by a person; QA records none on its own.",
-         "## Limitations\n" + ("\n".join(f"- Non-functional gap: {g}" for g in gaps) or "- No non-functional gap recorded.")
+         "## Limitations\n" + ("\n".join(f"- Non-functional gap: {g}" for g in gaps) or ("- No non-functional gap recorded." if not skipped else ""))
+         + "".join(f"\n- {f} was SKIPPED (not assessed): " + rd(f).split("Skipped by:")[1].split("\n")[0].strip() + " " + rd(f).split("Reason:")[1].split("\n")[0].strip() for f in skipped)
          + "\n- QA ran only the checks the stack adapters could run; see the execution report for what did not run.",
          "## Source records\nBuilt from: " + ", ".join(f for f in STEPS["recommend"][3])]
     return "\n\n".join(L) + "\n"

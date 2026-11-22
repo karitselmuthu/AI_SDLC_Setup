@@ -227,6 +227,23 @@ Every model call is logged to `usage.jsonl` (in `SDLC_WORKSPACE`, git-ignored) w
 prints one row per agent step. Calls use `--disable-slash-commands --strict-mcp-config --setting-sources ""`: without them every call loaded the user's
 skills, plugins and MCP tools (about 65,000 input tokens for one word); with them about 6,000. Agent tool limits and deny rules are still passed explicitly.
 
+## Skip plan (not every project needs every step)
+
+Plain rules read the inputs and *suggest* steps that may not be needed (`skipplan.py`). The page shows "Suggested skip: <reason>", and **Run all** pauses
+before such a step. Nothing is skipped until a person clicks **Skip...**, gives a name and a reason; the code then writes a placeholder document and
+logs it in the approvals ledger as `SKIPPED by <name>` with the reason. No model runs for a skipped step, the page shows "Skipped by ...", and
+the QA recommendation lists what was skipped as a limitation. Running the step later replaces the placeholder.
+
+| Agent | Skippable | Suggested when |
+|---|---|---|
+| Architect | assess | the input is under 400 words and describes no current environment |
+| | economics | under 400 words and no budget, volumes, users or dates |
+| | discuss | under 400 words |
+| | record | no client meeting notes were supplied |
+| Coder | detect | the stack adapters found one technology, no gaps, no unsupported files |
+| QA | nonfunctional | the approved scope and risk plan state no performance, accessibility, security, reliability or compatibility expectation |
+| | explore | 2 files or fewer and 80 lines or fewer changed, and no High-rated risk |
+
 ## QA agent (10 steps)
 
 A senior quality analyst for one change. Same pattern as the other agents: each step writes to `qa/briefs/`, named humans approve it, approvals go to the ledger.
@@ -305,6 +322,8 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
   test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
   test_qa_acceptance.py                                                 the 18 QA acceptance cases
+  test_skipplan.py                                                      suggested skips, the person's confirmation, the ledger
+  test_tokens.py                                                        token usage log and report
   test_qa.py                                                            the QA agent: ten steps, test-only edits, code-derived verdict
   test_web.py                                                           the web page: projects, status, approvals, security
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
