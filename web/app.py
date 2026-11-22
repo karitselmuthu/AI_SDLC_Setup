@@ -31,9 +31,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from architect import agent as architect_agent, baseline  # noqa: E402
 from coder import agent as coder_agent, handoff  # noqa: E402
+from qa import agent as qa_agent  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
-MODS = {"architect": architect_agent, "coder": coder_agent}
+MODS = {"architect": architect_agent, "coder": coder_agent, "qa": qa_agent}
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".yaml", ".yml", ".html"}
 MAX_UPLOAD = 5_000_000
@@ -48,10 +49,14 @@ LABELS = {
                   "discuss": "Client discussion pack", "record": "Record the client meeting", "handoff": "Solution baseline handoff"},
     "coder": {"understand": "Understand the work", "inspect": "Inspect the repository", "detect": "Detect the technology stack",
               "plan": "Plan the change", "implement": "Implement the change", "tests": "Developer tests and local checks",
-              "review": "Review the change", "pr": "Prepare the pull request", "handoff": "Human handoff to the reviewer"}}
+              "review": "Review the change", "pr": "Prepare the pull request", "handoff": "Human handoff to the reviewer"},
+    "qa": {"scope": "Review requirements and scope", "risk": "Assess quality risk", "coverage": "Select test coverage", "design": "Design scenarios and data",
+           "automate": "Create automated tests", "execute": "Execute and analyze tests", "explore": "Exploratory and regression testing",
+           "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"}}
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
-            "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"}}
+            "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
+            "qa": {v[1] for v in qa_agent.STEPS.values()}}
 
 
 # ------------------------------------------------------------------------------------------------ projects
@@ -86,7 +91,7 @@ def create(data):
         raise ValueError("Describe the project in at least a sentence: what it does, for whom, any constraints you know.")
     pid = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "project") + "-" + secrets.token_hex(2)
     d = PROJECTS / pid
-    for sub in ("inputs", "architect/briefs", "architect/baseline", "coder/briefs"):
+    for sub in ("inputs", "architect/briefs", "architect/baseline", "coder/briefs", "qa/briefs"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     (d / "inputs/project-brief.md").write_text(
         f"# Project description (supplied by the user)\n\nSource: entered on the web page by the user. Nothing else is known about the client, "
@@ -188,9 +193,18 @@ def step_args(p, agent, step):
                 raise ValueError("Add the client meeting notes first (use 'Add meeting notes'). If there was no meeting, add a note that says so.")
             return notes
         return src + notes if step == "handoff" else []
+    if agent == "qa" and step == "recommend":
+        return []
     if not p["repo"]:
         raise ValueError("Set the repository the coder should work in (under 'Coder setup').")
     repo = ["--repo", p["repo"]]
+    if agent == "qa":
+        if step == "scope":
+            if not p["ticket"]:
+                raise ValueError("Paste the approved ticket first (under 'Coder setup').")
+            cb = pdir(p["id"]) / "coder" / "briefs"  # the change details the QA agent reviews, when the Coder has produced them
+            return [str(d / "ticket.md"), *[str(cb / f) for f in ("pull-request.md", "change-plan.md") if (cb / f).exists()], *repo]
+        return repo + ([a for c in p["checks"] for a in ("--check", c)] if step == "execute" else [])
     if step == "understand":
         if not p["ticket"]:
             raise ValueError("Paste the approved ticket first (under 'Coder setup').")

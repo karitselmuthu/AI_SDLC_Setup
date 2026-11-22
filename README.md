@@ -221,6 +221,30 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
+## QA agent (10 steps)
+
+A senior quality analyst for one change. Same pattern as the other agents: each step writes to `qa/briefs/`, named humans approve it, approvals go to the ledger.
+
+| # | Step | Output | Model? |
+|---|---|---|---|
+| 1 | `scope`: requirements-to-test map, open questions, in/out of scope | `test-scope.md` | yes |
+| 2 | `risk`: impact and likelihood per area, prioritised | `risk-plan.md` | yes |
+| 3 | `coverage`: test levels and types, coverage gaps | `test-approach.md` | yes |
+| 4 | `design`: positive, negative, boundary, failure cases and safe data | `test-cases.md` | yes |
+| 5 | `automate`: writes test files only; application edits are reverted and reported | `automation-report.md` | yes |
+| 6 | `execute`: the code runs the approved checks: pass, fail, blocked, not run | `execution-report.md` | no |
+| 7 | `explore`: exploratory and regression assessment | `exploration-report.md` | yes |
+| 8 | `nonfunctional`: six dimensions, each Assessed, Gap or Not applicable | `nonfunctional-report.md` | yes |
+| 9 | `defects`: every failing check classified, defects with severity and evidence | `defect-report.md` | yes |
+| 10 | `recommend`: verdict computed from the records, never a release decision | `qa-recommendation.md` | no |
+
+```bash
+python qa/agent.py scope TICKET [FILE...] --repo PATH     # then risk, coverage, design, automate, execute, explore, nonfunctional, defects, recommend
+```
+
+Facts come from code (counts, results, the verdict). QA cannot approve its own findings (a developer approves the defect report too), edits test
+files only, and a model that writes "approved for release" is sent back. A person makes the release decision. The web page shows it as a third track.
+
 ## Web page
 
 ```bash
@@ -272,6 +296,7 @@ tests/                all tests, kept apart from the code (pytest.ini sets the p
   test_adapters.py                                                      stack adapters: detection, selection, gaps, unsupported, coverage
   test_coder_acceptance.py                                              the 16 prepared coding-agent acceptance cases
   test_human_handoff.py                                                 step 9: the reviewer's package, gates and decision
+  test_qa.py                                                            the QA agent: ten steps, test-only edits, code-derived verdict
   test_web.py                                                           the web page: projects, status, approvals, security
 docs/coder/           the coding agent's step prompts, _rules.md and a sample ticket
 ```

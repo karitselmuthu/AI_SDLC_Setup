@@ -429,3 +429,21 @@ def test_the_coders_first_step_is_given_the_architects_baseline_and_requirements
     arch = d / "architect/briefs"
     assert after == [str(d / "inputs/ticket.md"), str(arch / "solution-baseline.md"), str(arch / "requirements.md"), "--repo", str(repo.resolve())]
     assert app.step_args(p, "coder", "inspect") == ["--repo", str(repo.resolve())]  # only the first step gets them
+
+
+def test_the_qa_track_has_ten_steps_runs_from_the_page_and_is_given_the_ticket_and_the_change(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    assert len(v["tracks"]["qa"]["steps"]) == 10 and v["tracks"]["qa"]["next"] == "scope"
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    p = app.settings(pid, dict(repo=str(repo), ticket_text="AC1: x", checks=["pytest -q"]))
+    d = tmp_path / "projects" / pid
+    (d / "coder/briefs/pull-request.md").write_text("pr")
+    assert app.step_args(p, "qa", "scope") == [str(d / "inputs/ticket.md"), str(d / "coder/briefs/pull-request.md"), "--repo", str(repo.resolve())]
+    assert app.step_args(p, "qa", "execute") == ["--repo", str(repo.resolve()), "--check", "pytest -q"]
+    assert app.step_args(p, "qa", "recommend") == [] and app.step_args(p, "qa", "design") == ["--repo", str(repo.resolve())]
+    assert run(web, pid, agent="qa")[1] == {"started": "scope"}
+    awaiting(web, pid)
+    web("POST", f"/api/projects/{pid}/respond", dict(answer="y"))
+    assert "Developer" in wait(lambda: (lambda v: v["run"]["pending"]["role"] if v["run"]["pending"] and "Developer" in v["run"]["pending"]["role"] else None)(view(web, pid)))
