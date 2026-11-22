@@ -413,3 +413,19 @@ def test_a_project_can_carry_a_note_that_the_page_shows(web, tmp_path):
     app.save(pid, p)
     assert view(web, pid)["project"]["note"].startswith("Approvals here were scripted")
     assert "p.note" in (ROOT / "web" / "index.html").read_text()
+
+
+def test_the_coders_first_step_is_given_the_architects_baseline_and_requirements_when_they_exist(web, tmp_path):
+    pid = new(web)
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    p = app.settings(pid, dict(repo=str(repo), ticket_text="Approved ticket citing R-003"))
+    d = tmp_path / "projects" / pid
+    before = app.step_args(p, "coder", "understand")
+    assert before == [str(d / "inputs/ticket.md"), "--repo", str(repo.resolve())]  # nothing from the architect yet, nothing invented
+    for f in ("solution-baseline.md", "requirements.md", "delivery-approach.md"):
+        (d / "architect/briefs" / f).write_text("x")
+    after = app.step_args(p, "coder", "understand")
+    arch = d / "architect/briefs"
+    assert after == [str(d / "inputs/ticket.md"), str(arch / "solution-baseline.md"), str(arch / "requirements.md"), "--repo", str(repo.resolve())]
+    assert app.step_args(p, "coder", "inspect") == ["--repo", str(repo.resolve())]  # only the first step gets them

@@ -194,7 +194,10 @@ def step_args(p, agent, step):
     if step == "understand":
         if not p["ticket"]:
             raise ValueError("Paste the approved ticket first (under 'Coder setup').")
-        return [str(d / "ticket.md"), *[x for x in src if not x.endswith("project-brief.md")], *repo]
+        # the ticket cites the architect's requirement IDs, so the approved-or-not baseline and requirements are supplied as design input
+        arch = [str(pdir(p["id"]) / "architect" / "briefs" / f) for f in ("solution-baseline.md", "requirements.md")
+                if (pdir(p["id"]) / "architect" / "briefs" / f).exists()]
+        return [str(d / "ticket.md"), *[x for x in src if not x.endswith("project-brief.md")], *arch, *repo]
     if step == "tests":
         return repo + [a for c in p["checks"] for a in ("--check", c)]
     if step == "handoff":
