@@ -110,7 +110,7 @@ $("saveSet").onclick=async()=>{$("sErr").textContent="";try{await api("POST",`/a
 function fillSetup(){if(!view||setupFor===cur)return;setupFor=cur;const p=view.project;$("sRepo").value=p.repo||"";$("sChecks").value=(p.checks||[]).join("\n");$("sTicket").placeholder=p.ticket?"A ticket is saved. Paste new text to replace it.":"Paste the approved ticket here.";
  $("docs").replaceChildren(...p.docs.map(d=>h("div",{},d.name+" ",h("span",{class:"pill"},d.kind==="meeting"?"meeting notes":"source"))))}
 async function refresh(){if(!cur)return;try{view=await api("GET","/api/projects/"+cur)}catch(e){return}render()}
-function render(){const p=view.project;$("pname").textContent=p.name;$("pdesc").textContent=p.description;fillSetup();
+function render(){const p=view.project;document.title=(view.run&&view.run.pending?"● Needs you · ":"")+"AI SDLC Tracker";$("pname").textContent=p.name;$("pdesc").textContent=p.description;fillSetup();
  $("note").replaceChildren(...(p.note?[h("div",{class:"card",style:"border-color:var(--warn)"},h("b",{},"Please read: "),p.note)]:[]));
  const busy=view.run&&["running","awaiting"].includes(view.run.state);
  track("Architect","architect",$("tArchitect"),busy);track("Coder","coder",$("tCoder"),busy);needs();banner();handoffCard();
@@ -133,7 +133,8 @@ async function needs(){const r=view.run,el=$("needs");if(!(r&&r.pending)){el.rep
  const fb=h("textarea",{placeholder:"What should change? (required when you send it back)"});const err=h("div",{class:"err"});
  const answer=async a=>{try{await api("POST",`/api/projects/${cur}/respond`,{answer:a,feedback:fb.value});needKey="";await refresh()}catch(e){err.textContent=e.message}};
  const body=h("div",{class:"doc"});body.innerHTML=doc?md(doc):"<p class='muted'>This step has not written a document yet. Read the activity below.</p>";
- el.replaceChildren(h("div",{class:"card need"},h("h2",{},`Needs you: ${s.label}`),h("p",{style:"margin:0 0 8px"},"Approving as: ",h("b",{},r.pending.role)),
+ el.replaceChildren(h("div",{class:"card need"},h("h2",{},`Needs you: ${s.label}`),h("p",{style:"margin:0 0 4px"},"Approving as: ",h("b",{},r.pending.role)),
+  h("p",{class:"muted",style:"margin:0 0 8px"},`This step needs ${s.roles.length} separate approval${s.roles.length>1?"s":""}, one per role: `,s.roles.map((x,k)=>[k?", ":"",x.approved?"✓ "+x.role.split(" (")[0]+" (done)":x.role===r.pending.role?"▶ "+x.role.split(" (")[0]+" (this one, now)":"○ "+x.role.split(" (")[0]+" (next)"])),
   body,h("pre",{},r.log.slice(-10).join("\n")),h("div",{class:"row",style:"margin-top:8px"},h("button",{class:"good",onclick:()=>answer("y")},"Approve"),h("span",{class:"muted"},"or send it back:")),fb,h("div",{class:"row",style:"margin-top:6px"},h("button",{onclick:()=>answer("n")},"Send back with feedback")),err,
   h("p",{class:"muted"},"The agent only treats this as approved because you clicked it; the approval is written to the approvals ledger with the file's hash.")))}
 function banner(){const r=view.run,el=$("banner");
