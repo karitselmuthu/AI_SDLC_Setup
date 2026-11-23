@@ -4,7 +4,7 @@ suggest(agent, step, ctx) -> reason ('' = run it).  ctx: src (text of the source
 changed (files, lines changed in the repository, or None)."""
 import re
 
-SKIPPABLE = {"architect": ["assess", "economics", "discuss", "record"], "coder": ["detect"], "qa": ["explore", "nonfunctional"]}
+SKIPPABLE = {"architect": ["assess", "economics", "discuss", "record"], "coder": ["detect"], "qa": ["explore", "nonfunctional"], "review": ["interfaces", "accessibility", "cost"]}
 THIN = 400  # words of source documents below which later architect steps would mostly repeat "Not stated"
 ENV = re.compile(r"(?i)current (system|environment|stack|process)|existing (system|platform|infrastructure|application)|legacy|on-?prem|migrat")
 MONEY = re.compile(r"(?i)budget|cost|price|[$€£]|\busers\b|volume|per (month|year|day)|headcount|timeline|deadline|go-?live")
@@ -37,6 +37,14 @@ def suggest(agent, step, ctx):
             files, lines = ctx["changed"]
             if files <= 2 and lines <= 80:
                 return f"A small change ({files} file(s), {lines} line(s)) with no High-rated risk."
+    if agent == "review" and ctx.get("diff") is not None:
+        d = ctx["diff"]
+        if step == "accessibility" and not ctx.get("ui"):
+            return "No user-facing files (HTML, CSS, JSX, TSX, Vue, Svelte) were changed."
+        if step == "interfaces" and not ctx.get("interface") and ctx.get("all_new"):
+            return "Every changed source file is new (no existing consumers) and no interface, schema, dependency or configuration file changed."
+        if step == "cost" and not ctx.get("costly") and not ctx.get("compliance"):
+            return "No dependency, infrastructure or cloud-service file changed, and the supplied documents state no compliance control."
     return ""
 
 

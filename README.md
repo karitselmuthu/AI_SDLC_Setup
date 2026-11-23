@@ -9,8 +9,9 @@ every output is a draft, and only a named human reviewer can approve it (or send
 |---|---|---|---|---|
 | **Architect agent** | Solution architect for a sales opportunity | A versioned, approved solution baseline: requirements, architecture, delivery approach, estimate, proposal | 12 | `architect/agent.py` |
 | **Coding agent** | Developer for one approved ticket | A reviewed code change on a new git branch, tests, pull-request text and a package for the human reviewer | 9 | `coder/agent.py` |
+| **Review agent** | Senior engineering reviewer for that change | Evidence-based findings (each cites a real file and line), a verification pass, a scorecard, and unresolved High findings routed to a person | 9 | `review/agent.py` |
 | **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
-| **Web page** | One place to enter a project and follow all three | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
+| **Web page** | One place to enter a project and follow all four | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
 
 All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
 Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
@@ -18,7 +19,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 ## Contents
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
-[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Web page](#web-page) ·
+[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Web page](#web-page) ·
 [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
@@ -32,6 +33,9 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
    Coding agent (9 steps)      ->  change on a new branch + tests + pull-request text
             |                       reviewer decides on the merge (the agent never merges or pushes)
             v
+   Review agent (9 steps)      ->  findings with file and line evidence, scorecard
+            |                       unresolved High findings go to a person
+            v
    QA agent (10 steps)         ->  test evidence, defects, quality recommendation
                                     a person makes the release decision
 ```
@@ -40,6 +44,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 |---|---|
 | Architect | Account lead, lead solution architect, delivery lead, security, compliance, legal, finance reviewers (depends on the step) |
 | Coding | Tech lead and ticket owner; at the end, the human code reviewer makes the merge decision |
+| Review | Senior reviewer (every step); the tech lead signs the final report and takes the disposition of unresolved Blocker and High findings |
 | QA | QA lead, a developer (QA cannot approve its own findings), and a release owner who reads the recommendation |
 
 Each step reads only the approved output of the steps before it. A step cannot run until the earlier ones are approved, and a document edited after
@@ -61,7 +66,7 @@ python web/app.py                      # opens http://127.0.0.1:8765/
 ```
 
 Create a project (name and description, optional documents). Press **Run next step** on the Architect, read the draft in the **Needs you** panel, and
-**Approve** or **Send back**. For the Coder and QA, set the repository folder and paste the approved ticket under "Documents and Coder setup".
+**Approve** or **Send back**. For the Coder, Review and QA, set the repository folder and paste the approved ticket under "Documents and Coder setup".
 
 **Or the command line**, one agent at a time (each asks you to approve in the terminal):
 
@@ -69,6 +74,7 @@ Create a project (name and description, optional documents). Press **Run next st
 S=docs/architect/samples               # made-up sample documents
 python architect/agent.py qualify  $S/rfp.md $S/notes.md          # then discover, assess, ... handoff
 python coder/agent.py understand docs/coder/samples/ticket.md --repo /path/to/repo   # then inspect ... handoff
+python review/agent.py context TICKET.md --repo /path/to/repo      # then correctness, interfaces ... report
 python qa/agent.py scope TICKET.md --repo /path/to/repo           # then risk, coverage ... recommend
 ```
 
@@ -130,6 +136,9 @@ the QA recommendation lists what was skipped as a limitation. Running the step l
 | | discuss | under 400 words |
 | | record | no client meeting notes were supplied |
 | Coder | detect | the stack adapters found one technology, no gaps, no unsupported files |
+| Review | accessibility | no user-facing file (HTML, CSS, JSX, TSX, Vue, Svelte) changed |
+| | interfaces | every changed source file is new (no existing consumers) and no interface, schema, dependency or configuration file changed |
+| | cost | no dependency, infrastructure or cloud-service file changed and no compliance control is mentioned |
 | QA | nonfunctional | the approved scope and risk plan state no performance, accessibility, security, reliability or compatibility expectation |
 | | explore | 2 files or fewer and 80 lines or fewer changed, and no High-rated risk |
 
@@ -295,6 +304,37 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
+## Review agent (9 steps)
+
+A senior engineering reviewer for one proposed change. It **reviews only**: its tools are read-only, so it cannot edit code, run tests, approve a release or merge.
+Every step writes to `review/briefs/`, and a named person approves it.
+
+| # | Step | What it does | Output | Model? |
+|---|---|---|---|---|
+| 1 | `context` | Records the change under review (`change.diff`, taken from git without touching your index), the inputs, the components affected, and maps every acceptance criterion to the code | `review-context.md` | yes |
+| 2 | `correctness` | Behaviour against the acceptance criteria and the approved design | `correctness-findings.md` | yes |
+| 3 | `interfaces` | Changed APIs, schemas, configuration, shared code; existing consumers and upgrade paths | `interface-findings.md` | yes |
+| 4 | `security` | Authorization, validation, secrets, sensitive data, logging. Uncertain concerns are labelled Question for a person to validate | `security-findings.md` | yes |
+| 5 | `reliability` | Error paths, retries, timeouts, concurrency, resource use, performance-sensitive code | `reliability-findings.md` | yes |
+| 6 | `accessibility` | Semantics, keyboard access, labels, focus, contrast, for user-facing changes | `accessibility-findings.md` | yes |
+| 7 | `cost` | Code-level cost drivers and possible effects on stated compliance controls | `cost-compliance-findings.md` | yes |
+| 8 | `verify` | Re-reads the code for every finding: Confirmed, Handled elsewhere, Question, Recommendation or Withdrawn | `verification.md` | yes |
+| 9 | `report` | The scorecard, the list routed for human disposition, coverage and limitations | `review-report.md` | no |
+
+```bash
+python review/agent.py context TICKET [FILE...] --repo PATH [--base REF]   # default: the uncommitted work; --base compares against a commit or branch
+python review/agent.py correctness --repo PATH                             # then interfaces, security, reliability, accessibility, cost, verify, report
+```
+
+Rules enforced by code, not by the prompt alone:
+
+- Every finding needs a severity (Blocker, High, Medium, Low), a confidence (Confirmed, Probable, Question) and a `path:line` that exists in the repository; an invented citation is sent back.
+- Remediation is described in words; a finding written as replacement code is sent back.
+- The agent may not say "approved", "LGTM" or "safe to merge", and may not claim a change is compliant: code inspection cannot establish formal compliance.
+- The scanner (secrets, unsafe defaults, leftovers) runs on the diff in plain code; its Blocker findings go straight to the routed list, with secrets masked.
+- The scorecard counts, the routed list ("Blocker or High and still standing after verification") and the coverage table are computed from the approved records. The tech lead signs the final report and takes the disposition.
+- Accessibility, interfaces and cost can be skipped when the change has nothing for them (see the skip plan); the report lists what was skipped, by whom and why.
+
 ## QA agent (10 steps)
 
 A senior quality analyst for one change. Same pattern as the other agents: each step writes to `qa/briefs/`, named humans approve it, approvals go to the ledger.
@@ -327,12 +367,12 @@ Acceptance: `tests/test_qa_acceptance.py` has one test for each of the 18 QA cas
 python web/app.py            # opens http://127.0.0.1:8765/ ; use --port N to change it, --no-open to not open a browser
 ```
 
-Enter the project name and information (and any documents), then follow the **Architect** (12 steps) and the **Coder** (9 steps) on one page. Each
-track shows every step's status, who has approved, and buttons to run the next step or all steps. **Run all** pauses at every approval. When a step
+Enter the project name and information (and any documents), then follow the **Architect** (12 steps), the **Coder** (9), the **Review** agent (9) and **QA** (10) on one page, side by side. Each
+track shows every step's status, who has approved, and buttons to run the next step or all steps. **Run all** pauses at every approval, and before any step the skip plan suggests leaving out. **Skip...** records who skipped a step and why. When a step
 finishes a draft, a **Needs you** panel shows the draft and the role you are approving as: **Approve**, or **Send back** with feedback (required).
 Your click is the only thing that answers the agent's `approve? [y/N]` prompt, and it is written to the same approvals ledger the command line uses.
 Status comes from that ledger, not from what a model says. For the Coder, set the repository folder and paste the approved ticket under
-"Documents and Coder setup"; its handoff step ends with a **Reviewer decision** form (the page never merges anything).
+"Documents and Coder setup" (Review and QA use the same repository and ticket); the Coder's handoff step ends with a **Reviewer decision** form (the page never merges anything).
 
 Each project keeps its own files under `projects/<id>/` (git-ignored). It uses only the standard library and listens on 127.0.0.1 only, with a
 Host and Origin check and a per-run token on every change, so another web page cannot approve for you. It is not a login: anyone who can use this
@@ -343,20 +383,21 @@ computer's browser can approve. Documents can only be read from a fixed list of 
 ```
 architect/        Architect agent: agent.py (STEPS table, checks, approval loop), baseline.py (approval ledger, versioned baseline)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
+review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
 skipplan.py       Rules that suggest which steps a project may not need
 tokens.py         Per-step token and cost report from usage.jsonl
-docs/             The prompts the agents read (these are code): docs/architect, docs/coder, docs/qa, each with _rules.md; samples in docs/*/samples
+docs/             The prompts the agents read (these are code): docs/architect, docs/coder, docs/review, docs/qa, each with _rules.md; samples in docs/*/samples
 tests/            All tests (pytest.ini sets the paths)
 projects/         One folder per web-page project (git-ignored)
-architect/briefs, coder/briefs, qa/briefs, */baseline, usage.jsonl    generated outputs (git-ignored)
+architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.jsonl    generated outputs (git-ignored)
 ```
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py` (Review); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
@@ -439,3 +480,4 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
 - Skipping a step is available on the web page only, not from the command line.
+- The Review agent has been checked with canned model replies and one real run on a small change. Its findings are drafts for a person: a model can still miss a defect, so it supports a human review and does not replace one.

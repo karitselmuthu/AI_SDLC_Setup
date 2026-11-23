@@ -458,3 +458,24 @@ def test_run_all_pauses_before_a_step_that_may_not_be_needed(web):
         time.sleep(0.3)
     v = wait(lambda: (lambda v: v if v["run"]["state"] == "done" and any("[auto] paused before assess" in l for l in v["run"]["log"]) else None)(view(web, pid)))
     assert step(v, "architect", "assess")["status"] == "todo" and step(v, "architect", "assess")["suggest"]
+
+
+def test_the_review_track_has_nine_steps_gets_its_inputs_and_suggests_skips_from_the_change(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    assert len(v["tracks"]["review"]["steps"]) == 9 and v["tracks"]["review"]["next"] == "context"
+    repo = tmp_path / "r"
+    (repo / "pkg").mkdir(parents=True)
+    for c in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@x.invalid", "commit", "-q", "--allow-empty", "-m", "i"]):
+        subprocess.run(["git", "-C", str(repo), *c], check=True, capture_output=True)
+    (repo / "pkg/new_module.py").write_text("def f():\n    return 1\n")
+    p = app.settings(pid, dict(repo=str(repo), ticket_text="AC1: f returns 1"))
+    d = tmp_path / "projects" / pid
+    (d / "coder/briefs/pull-request.md").write_text("pr")
+    assert app.step_args(p, "review", "context") == [str(d / "inputs/ticket.md"), str(d / "coder/briefs/pull-request.md"), "--repo", str(repo.resolve())]
+    assert app.step_args(p, "review", "security") == ["--repo", str(repo.resolve())] and app.step_args(p, "review", "report") == []
+    ctx = app.context(pid, "review")
+    assert ctx["ui"] is False and ctx["all_new"] is True and ctx["interface"] is False
+    assert "No user-facing files" in app.suggestion(pid, "review", "accessibility") and "new" in app.suggestion(pid, "review", "interfaces")
+    assert app.suggestion(pid, "review", "correctness") == ""
+    assert run(web, pid, agent="review")[1] == {"started": "context"}

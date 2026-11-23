@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Web page for the architect and coder agents (local, standard library only).
+"""Web page for the Architect, Coder, Review and QA agents (local, standard library only).
 
   python web/app.py [--port 8765] [--no-open]
 
-A person enters the project information once, then follows two tracks, the Architect's 12 steps and the Coder's 9, and approves or sends
+A person enters the project information once, then follows four tracks (Architect 12 steps, Coder 9, Review 9, QA 10), and approves or sends
 back each draft in the browser. The page does NOT replace the agents or their guardrails: every step still runs as the same CLI process
-(`architect/agent.py`, `coder/agent.py`) in a per-project workspace (SDLC_WORKSPACE), and the page only answers the `approve? [y/N]` prompt
+(`architect/agent.py`, `coder/agent.py`, `review/agent.py`, `qa/agent.py`) in a per-project workspace (SDLC_WORKSPACE), and the page only answers the `approve? [y/N]` prompt
 when a person clicks. Status comes from the approvals ledger (the same check the agents use), never from what a model says.
 
 Safety: it listens on 127.0.0.1 only, checks the Host and Origin headers, and needs a random token (embedded in the page) on every change,
@@ -33,11 +33,12 @@ sys.path.insert(0, str(ROOT))
 from architect import agent as architect_agent, baseline  # noqa: E402
 from coder import agent as coder_agent, handoff  # noqa: E402
 from qa import agent as qa_agent  # noqa: E402
+from review import agent as review_agent  # noqa: E402
 import skipplan  # noqa: E402
 from coder import adapters  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
-MODS = {"architect": architect_agent, "coder": coder_agent, "qa": qa_agent}
+MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent}
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".yaml", ".yml", ".html"}
 MAX_UPLOAD = 5_000_000
@@ -53,12 +54,16 @@ LABELS = {
     "coder": {"understand": "Understand the work", "inspect": "Inspect the repository", "detect": "Detect the technology stack",
               "plan": "Plan the change", "implement": "Implement the change", "tests": "Developer tests and local checks",
               "review": "Review the change", "pr": "Prepare the pull request", "handoff": "Human handoff to the reviewer"},
+    "review": {"context": "Establish review context", "correctness": "Correctness and design fit", "interfaces": "Interfaces and compatibility",
+               "security": "Security and privacy", "reliability": "Reliability and performance", "accessibility": "Accessibility and usability",
+               "cost": "Cost and compliance implications", "verify": "Verify the findings", "report": "Findings and scorecard"},
     "qa": {"scope": "Review requirements and scope", "risk": "Assess quality risk", "coverage": "Select test coverage", "design": "Design scenarios and data",
            "automate": "Create automated tests", "execute": "Execute and analyze tests", "explore": "Exploratory and regression testing",
            "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"}}
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
+            "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff"},
             "qa": {v[1] for v in qa_agent.STEPS.values()}}
 
 
@@ -193,6 +198,15 @@ def context(pid, agent):
     if agent == "coder" and p["repo"] and pathlib.Path(p["repo"]).is_dir():
         pl = adapters.plan(p["repo"])
         ctx.update(stacks=[x["name"] for x in pl["stacks"]], gaps=pl["gaps"], unsupported=pl["unsupported"])
+    if agent == "review" and p["repo"] and pathlib.Path(p["repo"]).is_dir():
+        from coder import diffscan
+        diff = review_agent.change_diff(p["repo"])
+        files = review_agent.changed_files(diff)
+        src = [f for f in files if not qa_agent.C.is_test_path(f)]
+        ctx.update(diff=diff, ui=any(review_agent.UI_FILES.search(f) for f in files), interface=any(diffscan.is_interface(f) or f.rsplit("/", 1)[-1] in
+                   ("package.json", "requirements.txt", "pyproject.toml", "go.mod", "pom.xml") for f in files), all_new=bool(src) and all(review_agent.is_new_file(diff, f) for f in src),
+                   costly=any(re.search(r"(?i)(dockerfile|\.tf$|terraform|cloudformation|serverless|\.ya?ml$|requirements|package\.json|pom\.xml|go\.mod|pyproject)", f) for f in files),
+                   compliance=bool(re.search(r"(?i)gdpr|hipaa|pci|soc ?2|iso ?27001|compliance|retention|audit", ctx["src"] + rd(d / "inputs" / "ticket.md"))))
     if agent == "qa":
         qb = d / "qa" / "briefs"
         ctx["scope"] = rd(qb / "test-scope.md") + rd(qb / "risk-plan.md") if (qb / "test-scope.md").exists() else None
@@ -262,11 +276,19 @@ def step_args(p, agent, step):
                 raise ValueError("Add the client meeting notes first (use 'Add meeting notes'). If there was no meeting, add a note that says so.")
             return notes
         return src + notes if step == "handoff" else []
-    if agent == "qa" and step == "recommend":
+    if agent in ("qa", "review") and step in ("recommend", "report"):
         return []
     if not p["repo"]:
         raise ValueError("Set the repository the coder should work in (under 'Coder setup').")
     repo = ["--repo", p["repo"]]
+    if agent == "review":
+        if step != "context":
+            return repo
+        if not p["ticket"]:
+            raise ValueError("Paste the approved ticket first (under 'Coder setup').")
+        cb, ab = pdir(p["id"]) / "coder" / "briefs", pdir(p["id"]) / "architect" / "briefs"  # the change's design and pull request, when they exist
+        more = [str(b / f) for b, f in ((cb, "pull-request.md"), (cb, "change-plan.md"), (ab, "solution-baseline.md")) if (b / f).exists()]
+        return [str(d / "ticket.md"), *more, *repo]
     if agent == "qa":
         if step == "scope":
             if not p["ticket"]:
