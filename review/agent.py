@@ -10,7 +10,7 @@
   python review/agent.py verify --repo PATH                                  8. re-read the code for every finding
   python review/agent.py report                                              9. findings and scorecard, built by code (no model)
 It reviews. It never edits code, runs tests, approves a release or merges: tools are read-only. Every finding must cite a file and line that exist.
-Unresolved Blocker and High findings are routed to a person. Facts (counts, coverage, the routed list) come from code, not from a model.
+Unresolved Critical and High findings are routed to a person. Facts (counts, coverage, the routed list) come from code, not from a model.
 """
 import os
 import pathlib
@@ -27,6 +27,7 @@ import core  # noqa: E402
 from core import ask, flagged, false_approval  # noqa: E402
 from architect import baseline  # noqa: E402
 from coder import agent as C, diffscan  # noqa: E402
+from review import adapters  # noqa: E402
 from qa import agent as Q  # noqa: E402  (shared helpers: archive, tail, sections_missing, ids_missing, ac_ids, privacy)
 
 core.AGENTS["review"] = dict(
@@ -35,7 +36,7 @@ core.AGENTS["review"] = dict(
     tools=core.RO)
 
 REVIEWER = "Senior reviewer (the findings are fair, evidenced and complete for this dimension)"
-DISPOSITION = "Tech lead (has seen the findings and takes the disposition of every unresolved Blocker and High finding)"
+DISPOSITION = "Tech lead (has seen the findings and takes the disposition of every unresolved Critical and High finding)"
 # step -> (prompt, output file, reviewers, earlier outputs it builds on)
 STEPS = {
     "context": ("context.md", "review-context.md", [REVIEWER], []),
@@ -52,7 +53,13 @@ STEPS = {
 PREFIX = {"correctness": "C", "interfaces": "I", "security": "S", "reliability": "R", "accessibility": "A", "cost": "K"}
 DIMENSIONS = ["correctness", "interfaces", "security", "reliability", "accessibility", "cost"]
 NEEDS_TICKET, NEEDS_REPO = {"context"}, set(STEPS) - {"report"}
-SEVERITIES, CONFIDENCE = ("Blocker", "High", "Medium", "Low"), ("Confirmed", "Probable", "Question")
+# Critical: likely severe impact (broad unauthorized access, secret exposure, destructive data loss). High: significant security, privacy, correctness or
+# availability risk to important behaviour. Medium: meaningful defect with limited scope or a workaround. Low: localized, minor. Informational: a question or
+# improvement, not a confirmed defect.
+SEVERITIES, CONFIDENCE = ("Critical", "High", "Medium", "Low", "Informational"), ("Confirmed", "Probable", "Question")
+SCANNER_SEVERITY = {"Blocker": "Critical", "Should fix": "Medium", "Check": "Informational"}  # the diff scanner's own words, mapped to the scale
+COLUMNS = dict(severity="severity", confidence="confidence", evidence="evidence", behaviour="behaviou?r", impact="impact", trigger="trigger|reproduc", direction="direction|remediation|recommend")
+NO_TRIGGER = re.compile(r"(?i)^\W*(not (stated|known|given)|unknown|n/?a|none|-+|\?)\W*$")
 STATUSES = ("Confirmed", "Handled elsewhere", "Question", "Recommendation", "Withdrawn")
 UI_FILES = re.compile(r"(?i)\.(html?|css|scss|jsx|tsx|vue|svelte|xaml|storyboard|xib)$")
 COMPLIANT = re.compile(r"(?i)\b(is|are|fully|formally|now) compliant\b|\bcomplies with\b|\bmeets (the )?(gdpr|hipaa|soc ?2|pci|iso ?27001)\b|\bcompliance (is )?(met|achieved|confirmed)\b")
@@ -87,6 +94,19 @@ def rows_of(text, title="Findings"):
     return [r for r in C.section_rows(text, title)[1:] if r and re.match(r"^[A-Z]\d+$", r[0])]
 
 
+def parse_findings(text):
+    """Findings as dicts keyed by the canonical column names (severity, confidence, evidence, behaviour, impact, trigger, direction)."""
+    rows = C.section_rows(text, "Findings")
+    if not rows:
+        return []
+    idx = {k: next((i for i, h in enumerate(rows[0]) if re.search(rx, h, re.I)), None) for k, rx in COLUMNS.items()}
+    return [dict(id=r[0], **{k: (r[i].strip() if i is not None and i < len(r) else "") for k, i in idx.items()}) for r in rows_of(text)]
+
+
+def word(value, choices):
+    return next((c for c in choices if re.search(rf"(?i)\b{c}\b", value)), None)
+
+
 def bad_evidence(text, repo):
     """Every finding must cite `path:line` of a file that exists with at least that many lines."""
     bad = []
@@ -106,18 +126,22 @@ def check_findings(prefix):
     def check(briefs, text, repo):
         rows = C.section_rows(text, "Findings")
         head = " ".join(rows[0]).lower() if rows else ""
-        lack = [c for c in ("severity", "confidence", "evidence", "impact", "remediation") if rows and c not in head]
-        data = rows_of(text)
-        wrong = [r[0] for r in data if not any(s in " ".join(r) for s in SEVERITIES) or not any(c in " ".join(r) for c in CONFIDENCE)]
-        stray = [r[0] for r in data if not r[0].startswith(prefix)]
+        lack = [k for k, rx in COLUMNS.items() if rows and not re.search(rx, head)]
+        data = parse_findings(text)
+        wrong = [f["id"] for f in data if not word(f["severity"], SEVERITIES) or not word(f["confidence"], CONFIDENCE)]
+        info = [f["id"] for f in data if word(f["severity"], SEVERITIES) == "Informational" and word(f["confidence"], CONFIDENCE) == "Confirmed"]
+        thin = [f["id"] for f in data if word(f["confidence"], CONFIDENCE) == "Confirmed" and (NO_TRIGGER.match(f["trigger"]) or len(f["trigger"]) < 8)]
+        stray = [f["id"] for f in data if not f["id"].startswith(prefix)]
         none = not data and re.search(r"(?i)\bno findings?\b|\bnone\b", C.section(text, "Findings"))
         fix = (f"Findings table needs the columns: {', '.join(lack)}. " if lack else "")
         fix += (f"Give each finding a severity ({', '.join(SEVERITIES)}) and a confidence ({', '.join(CONFIDENCE)}): {', '.join(wrong)}. " if wrong else "")
+        fix += (f"Informational means a question or suggestion, never a Confirmed defect: {', '.join(info)}. " if info else "")
+        fix += (f"Confirmed needs the triggering conditions or a reproduction. Without them mark these Probable or Question: {', '.join(thin)}. " if thin else "")
         fix += (f"Number findings {prefix}1, {prefix}2 ...: {', '.join(stray)}. " if stray else "")
         fix += "" if data or none else "Add the findings table, or write 'No findings' with what you checked. "
         fix += "" if re.search(r"(?m)^## Not reviewed", text) else "Add '## Not reviewed' listing what you could not assess and why. "
         fix += bad_evidence(text, repo) if repo else ""
-        fix += "Describe remediation in words; do not write the fix as code. " if text.count("```") > 0 else ""
+        fix += "Describe the recommended direction in words; do not write the fix as code. " if text.count("```") > 0 else ""
         fix += Q.privacy(text) + ("State the concern without saying approved, safe to merge or LGTM; you do not decide. " if VERDICT.search(text) else "")
         return Q.tail(fix)
     return check
@@ -129,12 +153,15 @@ def check_cost(briefs, text, repo):
 
 
 def check_security(briefs, text, repo):
-    maybe = [r[0] for r in rows_of(text) if re.search(r"(?i)\b(might|may|could|possibly|potential)\b", " ".join(r)) and "Question" not in " ".join(r) and "Probable" not in " ".join(r)]
-    return Q.tail((f"Findings {', '.join(maybe)} sound uncertain: label them Question (needs validation) or Probable. " if maybe else "") + check_findings("S")(briefs, text, repo))
+    maybe = [f["id"] for f in parse_findings(text) if re.search(r"(?i)\b(might|may|could|possibly|potential)\b", f["impact"] + f["behaviour"]) and word(f["confidence"], CONFIDENCE) == "Confirmed"]
+    return Q.tail((f"Findings {', '.join(maybe)} sound uncertain: label them Question (needs validation) or Probable, not Confirmed. " if maybe else "") + check_findings("S")(briefs, text, repo))
 
 
 def check_context(briefs, text, repo, ticket=""):
-    return Q.tail(Q.sections_missing(text, "Inputs", "Scope of change", "Components affected", "Requirement to change map", "Not provided")
+    det = adapters.detect(repo, changed_files((briefs / "change.diff").read_text()), (briefs / "change.diff").read_text()) if repo and (briefs / "change.diff").exists() else dict(areas=[], unsupported=[])
+    unnamed = [a["area"] for a in det["areas"] if a["area"] not in C.section(text, "Review areas")]
+    return Q.tail(Q.sections_missing(text, "Inputs", "Scope of change", "Review areas", "Components affected", "Requirement to change map", "Not provided")
+                  + (f"'## Review areas' must name each detected area and what you will look at: {', '.join(unnamed)}. " if unnamed else "")
                   + Q.ids_missing(Q.ac_ids(ticket), C.section(text, "Requirement to change map"), "The requirement-to-change map") + Q.privacy(text))
 
 
@@ -195,6 +222,7 @@ def run_step(name, files, repo=None, base=None):
         if not diff:
             sys.exit("context: there is no change to review (no uncommitted work, and no --base given or the diff against it is empty).")
         (briefs / "change.diff").write_text(diff[:400_000] + ("\n[diff truncated at 400,000 characters]" if len(diff) > 400_000 else ""))
+        (briefs / "review-areas.md").write_text(adapters.render(adapters.detect(repo, changed_files(diff), diff)))
     elif not (briefs / "change.diff").exists():
         sys.exit(f"Cannot {name} yet: run `context` first (it records the change under review).")
     diff = (briefs / "change.diff").read_text()
@@ -205,6 +233,7 @@ def run_step(name, files, repo=None, base=None):
     extra = ("\n\nApproved earlier output (read first): " + ", ".join(str(briefs / p) for p in prior)) if prior else ""
     extra += f"\nThe change under review (unified diff, ground truth): {briefs / 'change.diff'}\nFiles changed (from git): {', '.join(changed_files(diff))}"
     extra += f"\nRepository to read for surrounding code: {repo}"
+    extra += adapters.prompt_note(adapters.detect(repo, changed_files(diff), diff))
     if docs:
         extra += ("\nTicket (read first): " if name in NEEDS_TICKET else "\nOther documents: ") + ", ".join(map(str, docs))
     guidance = [p for pat in ("README*", "CLAUDE.md", "CONTRIBUTING*") for p in repo.glob(pat)]
@@ -242,42 +271,46 @@ def skipped_info(briefs, f):
 def build_report(briefs, repo=None):
     rd = lambda f: (briefs / f).read_text() if (briefs / f).exists() else ""
     diff = rd("change.diff")
-    status = {r[0]: next((s for s in STATUSES if s in " ".join(r[1:])), "Unverified") for r in C.section_rows(rd("verification.md"), "Verification")[1:] if r}
+    status = {r[0]: next((x for x in STATUSES if x in " ".join(r[1:])), "Unverified") for r in C.section_rows(rd("verification.md"), "Verification")[1:] if r}
     findings, cover = [], []
     for step in DIMENSIONS:
         f = STEPS[step][1]
         if skip := skipped_info(briefs, f):
             cover.append((step, f"SKIPPED: {skip}"))
             continue
-        rows = rows_of(rd(f))
-        cover.append((step, f"Reviewed, {len(rows)} finding(s)" if rd(f) else "Not run"))
-        findings += [(step, r) for r in rows]
-    sev = lambda r: next((s for s in SEVERITIES if s in " ".join(r)), "Low")
-    live = [(s, r) for s, r in findings if status.get(r[0], "Unverified") not in ("Withdrawn", "Handled elsewhere")]
-    routed = [(s, r) for s, r in live if sev(r) in ("Blocker", "High")]
+        fs = parse_findings(rd(f))
+        cover.append((step, f"Reviewed, {len(fs)} finding(s)" if rd(f) else "Not run"))
+        findings += [(step, x) for x in fs]
+    sev = lambda x: word(x["severity"], SEVERITIES) or "Low"
+    done = lambda x: status.get(x["id"]) in ("Withdrawn", "Handled elsewhere")
+    live = [(s, x) for s, x in findings if not done(x)]
+    routed = [(s, x) for s, x in live if sev(x) in ("Critical", "High")]
     scan = diffscan.scan(diffscan.parse_diff(diff), changed_files(diff)) if diff else []
-    blockers = [x for x in scan if x["severity"] == "Blocker"]
+    critical = [x for x in scan if SCANNER_SEVERITY.get(x["severity"]) == "Critical"]
     table = "| Severity | Confirmed | Probable or Question | Withdrawn or handled elsewhere |\n|---|---|---|---|\n"
     for sv in SEVERITIES:
-        mine = [(s, r) for s, r in findings if sev(r) == sv]
-        done = [x for x in mine if status.get(x[1][0]) in ("Withdrawn", "Handled elsewhere")]
-        conf = [x for x in mine if x not in done and status.get(x[1][0]) == "Confirmed"]
-        table += f"| {sv} | {len(conf)} | {len(mine) - len(done) - len(conf)} | {len(done)} |\n"
+        mine = [(s, x) for s, x in findings if sev(x) == sv]
+        gone = [m for m in mine if done(m[1])]
+        conf = [m for m in mine if m not in gone and status.get(m[1]["id"]) == "Confirmed"]
+        table += f"| {sv} | {len(conf)} | {len(mine) - len(gone) - len(conf)} | {len(gone)} |\n"
+    areas = rd("review-areas.md")
     L = ["# Review report",
          "## Status\nDraft, pending review by the senior reviewer and the tech lead. This is a review of the change. It does not approve, merge or release anything; people do.",
-         f"## Scorecard\nFindings raised: {len(findings)}. Still standing after verification: {len(live)}. Routed for human disposition: {len(routed) + len(blockers)}.\n\n" + table,
-         "## Routed for human disposition\n" + ("\n".join(f"- **{r[0]}** ({sev(r)}, {status.get(r[0], 'Unverified')}, {s}): " + " | ".join(c for c in r[1:] if c)[:260] for s, r in routed)
-                                                 + "".join(f"\n- **Scanner** ({x['severity']}) `{x['file']}:{x['line']}`: {x['kind']}, {x['why']}" for x in blockers)
-                                                 or "None. No Blocker or High finding is standing."),
+         f"## Scorecard\nFindings raised: {len(findings)}. Still standing after verification: {len(live)}. Routed for human disposition: {len(routed) + len(critical)}.\n\n" + table,
+         "## Routed for human disposition (Critical and High findings still standing)\n"
+         + ("\n".join(f"- **{x['id']}** ({sev(x)}, {status.get(x['id'], 'Unverified')}, {s}): {x['behaviour']} | {x['impact']} | {x['evidence']}"[:340] for s, x in routed)
+            + "".join(f"\n- **Scanner** (Critical) `{x['file']}:{x['line']}`: {x['kind']}, {x['why']}" for x in critical) or "None. No Critical or High finding is standing."),
          "## Review coverage\n| Dimension | Result |\n|---|---|\n" + "\n".join(f"| {d} | {r} |" for d, r in cover),
+         "## Stack coverage (detected by code from repository evidence)\n" + (areas.split("## Review areas", 1)[1].strip() if "## Review areas" in areas else "Not recorded."),
          "## Limitations\n- This is a code and diff review only. Nothing was run or tested; QA testing is a separate step.\n"
          "- Code inspection alone cannot establish formal compliance. Compliance points are potential impacts that need validation against the stated controls.\n"
          "- Accessibility and performance concerns are read from code, not measured in a running application.\n"
+         "- Areas listed as unsupported above were not reviewed and need a specialist.\n"
          "- Findings marked Question or Probable need a person to confirm them; none was fixed by this agent."]
     if scan:
-        L.append("## Scanner findings from code (secrets, unsafe defaults, leftovers)\n| Severity | Kind | Where | Why |\n|---|---|---|---|\n" +
-                 "\n".join(f"| {x['severity']} | {x['kind']} | `{x['file']}:{x['line']}` | {x['why']} |" for x in scan))
-    L.append("## Source records\nBuilt from the approved: " + ", ".join(f for _, (_, f, _, _) in STEPS.items() if f != "review-report.md") + ", change.diff.")
+        L.append("## Scanner findings from code (secrets, unsafe defaults, leftovers; scanner terms mapped to the severity scale)\n| Severity | Kind | Where | Why |\n|---|---|---|---|\n" +
+                 "\n".join(f"| {SCANNER_SEVERITY.get(x['severity'], 'Informational')} (scanner: {x['severity']}) | {x['kind']} | `{x['file']}:{x['line']}` | {x['why']} |" for x in scan))
+    L.append("## Source records\nBuilt from the approved: " + ", ".join(f for _, (_, f, _, _) in STEPS.items() if f != "review-report.md") + ", change.diff, review-areas.md.")
     return "\n\n".join(L) + "\n"
 
 

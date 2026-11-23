@@ -311,7 +311,7 @@ Every step writes to `review/briefs/`, and a named person approves it.
 
 | # | Step | What it does | Output | Model? |
 |---|---|---|---|---|
-| 1 | `context` | Records the change under review (`change.diff`, taken from git without touching your index), the inputs, the components affected, and maps every acceptance criterion to the code | `review-context.md` | yes |
+| 1 | `context` | Records the change under review (`change.diff`, taken from git without touching your index), detects the stack areas it touches (`review-areas.md`), and maps every acceptance criterion to the code | `review-context.md` | yes |
 | 2 | `correctness` | Behaviour against the acceptance criteria and the approved design | `correctness-findings.md` | yes |
 | 3 | `interfaces` | Changed APIs, schemas, configuration, shared code; existing consumers and upgrade paths | `interface-findings.md` | yes |
 | 4 | `security` | Authorization, validation, secrets, sensitive data, logging. Uncertain concerns are labelled Question for a person to validate | `security-findings.md` | yes |
@@ -326,13 +326,39 @@ python review/agent.py context TICKET [FILE...] --repo PATH [--base REF]   # def
 python review/agent.py correctness --repo PATH                             # then interfaces, security, reliability, accessibility, cost, verify, report
 ```
 
+**Severity scale** (the same everywhere in the report):
+
+| Severity | Meaning |
+|---|---|
+| Critical | A likely severe impact, such as broad unauthorized access, secret exposure or destructive data loss |
+| High | A significant security, privacy, correctness or availability risk affecting important behaviour |
+| Medium | A meaningful defect or maintainability risk with limited scope or a viable workaround |
+| Low | A localized issue with minor impact |
+| Informational | A question or improvement suggestion, not a confirmed defect |
+
+**Stack-aware review adapters** (`review/adapters.py`, plain code, no model). The `context` step finds which areas the change touches from repository evidence
+(file names, manifests, added lines) and hands the model the focus for each. Areas the change does not touch are not reviewed, and a language with no adapter
+(C, C++, COBOL, Shell, Elixir, R, Lua and similar) is listed as **unsupported** and routed for specialist review, never assumed to be covered.
+
+| Area | Detected from | Review focus |
+|---|---|---|
+| Frontend | `.tsx .jsx .vue .svelte .html .css`, React, Vue, Angular, Svelte in `package.json` | state and rendering, unsafe browser behaviour, accessibility, input handling, client-side secrets |
+| Backend | Python, Java, Kotlin, C#, Go, Rust, PHP, Ruby, Scala, Node source (not tests) | business logic, authorization, validation, error handling, concurrency, API behaviour |
+| Mobile and desktop | `AndroidManifest.xml`, `Info.plist`, `.swift`, `.dart`, Electron, React Native | permissions, sensitive storage, platform behaviour, accessibility, secure communication |
+| Data and databases | `.sql`, migrations, Prisma, SQL statements or database clients in added code | query safety, schema changes, data integrity, sensitive data, migration compatibility |
+| Integration and messaging | OpenAPI, GraphQL, protobuf, webhooks, queues, HTTP clients in added code | contract compatibility, authentication, retries, idempotency, ordering, failure handling |
+| Infrastructure and delivery | Terraform, Dockerfile, Helm, Kubernetes, serverless, CI workflows | permissions, exposed endpoints, secret handling, insecure defaults, scaling and cost |
+| AI and data applications | model SDKs, embeddings, vector stores, pipeline tools in added code | data exposure, access boundaries, unsafe tool use, evaluation assumptions, logging, resource cost |
+| Cross-cutting | always | maintainability, reliability, observability, privacy, policy alignment, evidence quality |
+
 Rules enforced by code, not by the prompt alone:
 
-- Every finding needs a severity (Blocker, High, Medium, Low), a confidence (Confirmed, Probable, Question) and a `path:line` that exists in the repository; an invented citation is sent back.
+- Every finding needs a severity, a confidence (Confirmed, Probable, Question), a `path:line` that exists in the repository, the affected behaviour, the impact, the triggering conditions or reproduction, and a recommended direction. An invented citation is sent back.
+- A finding is **Confirmed** only with the cited code *and* its triggering conditions; otherwise it must be Probable or Question. Informational is never Confirmed.
 - Remediation is described in words; a finding written as replacement code is sent back.
 - The agent may not say "approved", "LGTM" or "safe to merge", and may not claim a change is compliant: code inspection cannot establish formal compliance.
-- The scanner (secrets, unsafe defaults, leftovers) runs on the diff in plain code; its Blocker findings go straight to the routed list, with secrets masked.
-- The scorecard counts, the routed list ("Blocker or High and still standing after verification") and the coverage table are computed from the approved records. The tech lead signs the final report and takes the disposition.
+- The scanner (secrets, unsafe defaults, leftovers) runs on the diff in plain code and its terms are mapped to the scale (Blocker is Critical, Should fix is Medium, Check is Informational). Scanner Critical findings go straight to the routed list, with secrets masked.
+- The scorecard counts, the routed list ("Critical or High and still standing after verification") and the coverage table are computed from the approved records. The tech lead signs the final report and takes the disposition of every routed finding.
 - Accessibility, interfaces and cost can be skipped when the change has nothing for them (see the skip plan); the report lists what was skipped, by whom and why.
 
 ## QA agent (10 steps)
@@ -383,7 +409,7 @@ computer's browser can approve. Documents can only be read from a fixed list of 
 ```
 architect/        Architect agent: agent.py (STEPS table, checks, approval loop), baseline.py (approval ledger, versioned baseline)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
-review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard)
+review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log

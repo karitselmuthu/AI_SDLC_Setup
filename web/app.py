@@ -63,7 +63,7 @@ LABELS = {
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
-            "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff"},
+            "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff", "review-areas.md"},
             "qa": {v[1] for v in qa_agent.STEPS.values()}}
 
 
