@@ -7,3 +7,5 @@ projects/
 usage.jsonl
 qa/briefs/
 review/briefs/
+.DS_Store
+.idea/
