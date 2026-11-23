@@ -281,6 +281,7 @@ def run_step(name, files, repo=None):
         if flags and "Source-document anomalies" not in text:
             gaps.append("Add a '## Source-document anomalies' section (file, quote, ignored). Reply with the complete updated document.")
         if gap := "\n".join(filter(None, gaps)):
+            print("repair pass (one extra model call):", gap[:300].replace("\n", " "))
             text = C.need_document(name, ask("qa", gap))
         out.write_text(text)
         if C.signoff(briefs, name, out, reviewers):

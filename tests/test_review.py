@@ -286,3 +286,11 @@ def test_ordinary_words_do_not_trigger_the_data_or_ai_areas(tmp_path):
     assert got == {"Backend", "Cross-cutting"}
     got, _ = areas(tmp_path / "sql", {"src/app.py": "x"}, '+cur.execute("SELECT id FROM users WHERE a = %s", (a,))\n')
     assert "Data and databases" in got
+
+
+def test_a_repair_pass_says_why_it_was_needed(rv, monkeypatch, capsys):
+    R.run_step("context", [str(rv["ticket"])], str(rv["repo"]))
+    replies = iter([DOCS["STEP 2"].replace("Recommended direction", "Notes"), DOCS["STEP 2"]])
+    monkeypatch.setattr(R, "ask", lambda a, p: next(replies))
+    R.run_step("correctness", [], str(rv["repo"]))
+    assert "repair pass (one extra model call):" in capsys.readouterr().out
