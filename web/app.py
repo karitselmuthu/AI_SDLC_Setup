@@ -34,15 +34,17 @@ from architect import agent as architect_agent, baseline  # noqa: E402
 from coder import agent as coder_agent, handoff  # noqa: E402
 from qa import agent as qa_agent  # noqa: E402
 from release import agent as release_agent  # noqa: E402
+from sre import agent as sre_agent  # noqa: E402
 from review import agent as review_agent  # noqa: E402
 import skipplan  # noqa: E402
 from coder import adapters  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
-MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent, "release": release_agent}
-NEVER_AUTO = {("release", "promote")}  # "Run all" never starts a promotion; a person starts it, then authorizes the exact commands
+MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent, "release": release_agent, "sre": sre_agent}
+NEVER_AUTO = {("release", "promote"), ("sre", "remediate")}  # "Run all" never starts a production change; a person starts it, then authorizes the exact commands
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
-UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".yaml", ".yml", ".html"}
+UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".jsonl", ".log", ".yaml", ".yml", ".html"}
+DOC_KINDS = ("meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
 MAX_UPLOAD = 5_000_000
 MAX_BODY = 12_000_000
 TOKEN = secrets.token_urlsafe(24)
@@ -64,13 +66,17 @@ LABELS = {
            "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"},
     "release": {"request": "Receive the release request", "readiness": "Check release readiness", "plan": "Prepare the release plan", "provenance": "Verify artifact and provenance",
                 "config": "Validate target configuration", "promote": "Execute authorized promotion", "monitor": "Monitor rollout health", "rollback": "Roll back or recover",
-                "close": "Close the release"}}
+                "close": "Close the release"},
+    "sre": {"context": "Establish service context", "health": "Observe service health", "risks": "Detect reliability risks", "triage": "Triage the incident",
+            "recommend": "Recommend response actions", "remediate": "Authorized remediation", "updates": "Incident updates", "recovery": "Recovery and closure",
+            "review": "Learn and improve"}}
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
             "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff", "review-areas.md"},
             "qa": {v[1] for v in qa_agent.STEPS.values()},
-            "release": {v[1] for v in release_agent.STEPS.values()}}
+            "release": {v[1] for v in release_agent.STEPS.values()},
+            "sre": {v[1] for v in sre_agent.STEPS.values()} | {"review-facts.md"}}
 
 
 # ------------------------------------------------------------------------------------------------ projects
@@ -128,7 +134,7 @@ def add_doc(pid, data):
         raise ValueError("The file is empty.")
     if len(raw) > MAX_UPLOAD:
         raise ValueError("The file is larger than 5 MB.")
-    kind = data.get("kind") if data.get("kind") in ("meeting", "release") else "source"
+    kind = data.get("kind") if data.get("kind") in DOC_KINDS else "source"
     (d / "inputs" / name).write_bytes(raw)
     p["docs"] = [x for x in p["docs"] if x["name"] != name] + [dict(name=name, kind=kind)]
     save(pid, p)
@@ -151,6 +157,8 @@ def settings(pid, data):
         if text:
             (pdir(pid) / "inputs/ticket.md").write_text(text + "\n")
         p["ticket"] = bool(text) or p["ticket"]
+    if "actions" in data:
+        p["actions"] = [c.strip()[:200] for c in data["actions"] if isinstance(c, str) and c.strip()][:5]
     if "checks" in data:
         p["checks"] = [c.strip()[:200] for c in data["checks"] if isinstance(c, str) and c.strip()][:10]
     save(pid, p)
@@ -282,6 +290,30 @@ def step_args(p, agent, step):
                 raise ValueError("Add the client meeting notes first (use 'Add meeting notes'). If there was no meeting, add a note that says so.")
             return notes
         return src + notes if step == "handoff" else []
+    if agent == "sre":
+        of = lambda kind: [str(d / x["name"]) for x in p["docs"] if x["kind"] == kind]
+        if step == "context":
+            if not of("sre"):
+                raise ValueError("Add the service catalog entry first (under Documents, add it as 'SRE service document'; add runbooks, SLOs and alert rules the same way).")
+            return of("sre")
+        if step in ("health", "recovery"):
+            ev = of("evidence" if step == "health" else "recovery")
+            if not any(f.endswith(".csv") for f in ev):
+                raise ValueError("Add a metrics snapshot first (a .csv with time,metric,value) as " + ("'SRE evidence'." if step == "health" else "'SRE recovery evidence' (a newer snapshot taken after the action)."))
+            return [a for f in ev for a in ((("--metrics" if f.endswith(".csv") else "--events" if f.endswith(".jsonl") else "--logs"), f))]
+        if step == "triage":
+            if not of("incident"):
+                raise ValueError("Add the incident note first (under Documents, add it as 'SRE incident note').")
+            return of("incident")
+        if step == "remediate":
+            acts = [a for a in p.get("actions", []) if a]
+            pol, al = of("policy"), of("allowlist")
+            if not acts:
+                return []  # read-only: nothing is requested, so nothing is changed
+            if not (pol and al and p["repo"]):
+                raise ValueError("To authorize an action, add a policy and an allowlist (as 'SRE policy' and 'SRE allowlist') and set the repository folder: the action's command runs there.")
+            return ["--policy", pol[0], "--allowlist", al[0], "--repo", p["repo"], *[a for x in acts for a in ("--action", x)]]
+        return []
     if agent == "release":
         if step in ("request",):
             asks = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "release"]

@@ -12,7 +12,8 @@ every output is a draft, and only a named human reviewer can approve it (or send
 | **Review agent** | Senior engineering reviewer for that change | Evidence-based findings (each cites a real file and line), a verification pass, a scorecard, and unresolved High findings routed to a person | 9 | `review/agent.py` |
 | **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
 | **Release agent** | Senior release manager for the approved artifact | A release record, a readiness decision, a versioned plan, provenance, configuration status, a recorded promotion, rollout health, a rollback record and the release history | 9 | `release/agent.py` |
-| **Web page** | One place to enter a project and follow all five | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
+| **SRE agent** | Senior site reliability engineer for one running service | Service context, health from evidence snapshots, prioritized SLO and alert risks, incident triage, runbook recommendations, gated remediation, updates, recovery status and an incident review | 9 | `sre/agent.py` |
+| **Web page** | One place to enter a project and follow all six | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
 
 All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
 Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
@@ -20,7 +21,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 ## Contents
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
-[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [Web page](#web-page) ·
+[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [SRE agent](#sre-agent-9-steps) · [Web page](#web-page) ·
 [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
@@ -43,6 +44,10 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
             v
    Release agent (9 steps)     ->  readiness, plan, provenance, promotion, health, rollback, history
                                     the Release Manager approves production; the agent never does
+            |
+            v
+   SRE agent (9 steps)         ->  health, risks, triage, gated action, recovery, incident review
+                                    the on-call engineer owns the incident; the agent is read-only by default
 ```
 
 | Agent | Who approves (each role signs separately) |
@@ -52,6 +57,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 | Review | Senior reviewer (every step); the tech lead signs the final report and takes the disposition of unresolved Critical and High findings |
 | QA | QA lead, a developer (QA cannot approve its own findings), and a release owner who reads the recommendation |
 | Release | The Release Manager signs every record and authorizes the promotion; a deployment operator also signs the plan |
+| SRE | The service owner signs the service context; the on-call engineer signs everything else, authorizes any action and decides closure; an SRE lead also signs the incident review |
 
 Each step reads only the approved output of the steps before it. A step cannot run until the earlier ones are approved, and a document edited after
 approval is flagged. You do not have to run every step: see the [skip plan](#skip-plan-not-every-project-needs-every-step).
@@ -443,18 +449,53 @@ A technology with no adapter (mainframe JCL and COBOL, Windows installers and SC
 
 Acceptance: `tests/test_release_adapters.py` has a test for each target row, unsupported targets and the plan checks. `tests/test_release.py` runs every step with tiny shell commands that write marker files, including the refusals above.
 
+## SRE agent (9 steps)
+
+A senior site reliability engineer for one running service. It watches evidence, detects SLO risk, helps the on-call engineer triage, recommends the least risky runbook action and, **only when a policy, an allowlist and a person all allow it**, runs that action and checks the result with an independent signal. **The on-call engineer owns the incident**; the agent never closes one. Five steps use a model for narrative; four are plain code.
+
+| # | Step | What happens | Output | Model? |
+|---|---|---|---|---|
+| 1 | `context` | Service catalog, owner, dependencies, SLOs, alert rules, runbooks, changes. Owner, on-call and escalation must appear verbatim in the documents; the code adds gaps it can compute (a runbook older than 180 days, a missing owner) | `service-context.md` | yes |
+| 2 | `health` | Reads metric, event and log snapshots: window, source freshness (fresh or STALE), per-metric statistics, an evidence index with ids | `service-health.md` | no |
+| 3 | `risks` | SLO burn rate (Page at 14.4x over 1h, Ticket at 6x over 6h, Watch at 1x), latency, capacity trend, configured alert rules, recurring alerts, each with priority, evidence, impact estimate and confidence | `reliability-risks.md` | no |
+| 4 | `triage` | Timeline, affected components, **observed facts kept apart from hypotheses**; every fact cites an evidence id that exists | `incident-triage.md` | yes |
+| 5 | `recommend` | Least risky listed runbook action first, with expected effect, prerequisites, rollback or recovery. Nothing is run | `recommendations.md` | yes |
+| 6 | `remediate` | Read-only by default. Runs an allowlisted, bounded action only if the policy allows it, it was recommended, and a person says yes; then checks independent health signals and writes an audit record | `action-record.md` | no |
+| 7 | `updates` | Status, impact and handoff text for the on-call engineer to review and send; no recovery or cause claim the evidence does not support | `incident-updates.md` | yes |
+| 8 | `recovery` | Recovery criteria against the service's own SLOs on a fresh snapshot (RECOVERED, NOT RECOVERED, INSUFFICIENT EVIDENCE); a person records the closure decision | `recovery-status.md` | no |
+| 9 | `review` | Facts by code (timeline, detection delay, budget burn, recurrence), then a blameless analysis and follow-ups that each trace to evidence or a gap | `incident-review.md` | yes |
+
+```bash
+python sre/agent.py context CATALOG.md [RUNBOOKS.md ...]
+python sre/agent.py health --metrics m.csv --events e.jsonl --logs l.txt      # then risks, triage NOTE.md, recommend
+python sre/agent.py remediate --policy policy.json --allowlist allow.json --action "Restart worker pool" --repo CWD
+python sre/agent.py updates ; python sre/agent.py recovery --metrics after.csv ; python sre/agent.py review
+```
+
+Evidence is read from snapshot files: `metrics.csv` (`time,metric,value`, ISO times, ratios 0 to 1), `events.jsonl` (`{"time","kind","name","message"}`) and `logs.txt` (lines starting with an ISO time). Records cite `M:<metric>`, `EV<n>`, `L<n>` and `R<n>`; an id that does not exist sends the record back.
+
+What the code enforces, not the prompt:
+
+- **Read-only by default.** With no policy, no allowlist and no person's yes, the action record says NO ACTION TAKEN. An action runs only if it was in the approved recommendations, is on the allowlist, the policy allows remediation, the environment and risk, and it has a fixed target, a timeout and a verification check that is **not** the action's own command.
+- **The command comes from the allowlist, never from the model.** Output and commands are secret-masked; the authorization is pinned in the approvals ledger with the policy and allowlist hashes. A failed verification offers a rollback only with a second yes.
+- **Observed facts and hypotheses are separate.** A fact that says "caused by" or "due to" is sent back; a cause must be a hypothesis with a confidence and what would confirm or refute it.
+- **No unproven recovery.** An update that says recovered, resolved or fixed is refused unless a verified action result supports it. Stale data lowers every confidence to Low; a missing metric is a gap, never "healthy".
+- **The person closes.** Recovery produces a recommendation; the closure decision (closed or kept open) is a separate prompt only a person answers. Run all never starts a remediation.
+
+Acceptance: `tests/test_sre.py` and `tests/test_sre_evidence.py` run every step on synthetic snapshots, including each refusal above.
+
 ## Web page
 
 ```bash
 python web/app.py            # opens http://127.0.0.1:8765/ ; use --port N to change it, --no-open to not open a browser
 ```
 
-Enter the project name and information (and any documents), then follow the **Architect** (12 steps), the **Coder** (9), the **Review** agent (9), **QA** (10) and the **Release** agent (9) on one page, side by side. Each
+Enter the project name and information (and any documents), then follow the **Architect** (12 steps), the **Coder** (9), the **Review** agent (9), **QA** (10) and the **Release** agent (9) and the **SRE** agent (9) on one page, side by side. Each
 track shows every step's status, who has approved, and buttons to run the next step or all steps. **Run all** pauses at every approval, and before any step the skip plan suggests leaving out. **Skip...** records who skipped a step and why. When a step
 finishes a draft, a **Needs you** panel shows the draft and the role you are approving as: **Approve**, or **Send back** with feedback (required).
 Your click is the only thing that answers the agent's `approve? [y/N]` prompt, and it is written to the same approvals ledger the command line uses.
 Status comes from that ledger, not from what a model says. For the Coder, set the repository folder and paste the approved ticket under
-"Documents and Coder setup" (Review, QA and Release use the same repository; add the release request as a document of kind **Release request**; the release commands run in the repository folder); the Coder's handoff step ends with a **Reviewer decision** form (the page never merges anything).
+"Documents and Coder setup" (Review, QA and Release use the same repository; add the release request as a document of kind **Release request**, and the SRE inputs as kinds **SRE service document**, **SRE evidence**, **SRE incident note**, **SRE recovery evidence**, **SRE policy** and **SRE allowlist** (an optional setting names the actions to authorize; empty means read-only); the release commands run in the repository folder); the Coder's handoff step ends with a **Reviewer decision** form (the page never merges anything).
 
 Each project keeps its own files under `projects/<id>/` (git-ignored). It uses only the standard library and listens on 127.0.0.1 only, with a
 Host and Origin check and a per-run token on every change, so another web page cannot approve for you. It is not a login: anyone who can use this
@@ -467,6 +508,7 @@ architect/        Architect agent: agent.py (STEPS table, checks, approval loop)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
 review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
+sre/              SRE agent: agent.py (nine steps, remediation gates, recovery, review facts), evidence.py (snapshots, burn rates, alert rules)
 release/          Release agent: agent.py (nine steps, readiness gates, provenance, gated promotion, health, rollback), adapters.py (release targets and their checks)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
@@ -480,7 +522,7 @@ architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.json
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py`, `test_release_adapters.py` (Release); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py`, `test_release_adapters.py` (Release); `test_sre.py`, `test_sre_evidence.py` (SRE); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
@@ -562,6 +604,7 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The sample documents are made up.
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
-- Skipping a step is available on the web page only, not from the command line. Release steps cannot be skipped.
+- Skipping a step is available on the web page only, not from the command line. Release and SRE steps cannot be skipped.
+- The SRE agent reads snapshot files, not live monitoring: it is only as trustworthy as whoever collects them, and it cannot tell that evidence came from a different environment than the action. It has been run once with the real model on made-up incident data (5 model steps, about $1.14), not on a real service. Traces are not read yet. Steps 1 to 3 are refreshed by re-running them, which makes the later steps stale; a separate service record with a folder per incident is not built yet. Documents in the same folder as an input are readable by the model.
 - The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. Unsupported targets are reported, not blocked: there is no way yet to record a specialist's sign-off, so the Release Manager reads the warning and decides. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.
 - The Review agent has been checked with canned model replies and one real run on a small change. Its findings are drafts for a person: a model can still miss a defect, so it supports a human review and does not replace one.

@@ -513,3 +513,39 @@ def test_run_all_never_starts_a_promotion(web, monkeypatch):
     monkeypatch.setattr(app.MANAGER, "start", lambda *a, **k: started.append(a))
     app.MANAGER.finished(run_obj)
     assert not started and "never started automatically" in run_obj.log[0]
+
+
+def test_the_sre_track_has_nine_steps_takes_its_documents_and_never_changes_production_by_default(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    assert len(v["tracks"]["sre"]["steps"]) == 9 and v["tracks"]["sre"]["next"] == "context" and not any(s["skippable"] for s in v["tracks"]["sre"]["steps"])
+    p = app.load(pid)
+    for step, word in (("context", "service catalog"), ("health", "metrics snapshot"), ("triage", "incident note"), ("recovery", "metrics snapshot")):
+        with pytest.raises(ValueError, match=word):
+            app.step_args(p, "sre", step)
+    for name, text, kind in (("catalog.md", "Owner: x", "sre"), ("m.csv", "time,metric,value\n", "evidence"), ("e.jsonl", "{}\n", "evidence"), ("l.log", "2026-11-24T09:00:00Z x\n", "evidence"),
+                             ("note.md", "checkout failing", "incident"), ("after.csv", "time,metric,value\n", "recovery"), ("p.json", "{}", "policy"), ("a.json", "{}", "allowlist")):
+        assert web("POST", f"/api/projects/{pid}/docs", dict(name=name, text=text, kind=kind))[0] == 200
+    d, p = tmp_path / "projects" / pid / "inputs", app.load(pid)
+    assert app.step_args(p, "sre", "context") == [str(d / "catalog.md")] and app.step_args(p, "sre", "triage") == [str(d / "note.md")]
+    assert app.step_args(p, "sre", "health") == ["--metrics", str(d / "m.csv"), "--events", str(d / "e.jsonl"), "--logs", str(d / "l.log")]
+    assert app.step_args(p, "sre", "recovery") == ["--metrics", str(d / "after.csv")]
+    assert app.step_args(p, "sre", "risks") == [] and app.step_args(p, "sre", "remediate") == []  # no action requested: read-only
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    p = app.settings(pid, dict(repo=str(repo), actions=["Restart worker pool", ""]))
+    assert p["actions"] == ["Restart worker pool"]
+    assert app.step_args(p, "sre", "remediate") == ["--policy", str(d / "p.json"), "--allowlist", str(d / "a.json"), "--repo", str(repo.resolve()), "--action", "Restart worker pool"]
+    p["docs"] = [x for x in p["docs"] if x["kind"] != "allowlist"]
+    with pytest.raises(ValueError, match="allowlist"):
+        app.step_args(p, "sre", "remediate")  # an action is requested but the allowlist is missing: refuse, never improvise
+
+
+def test_run_all_never_starts_a_production_change_for_the_sre_agent(web, monkeypatch):
+    pid = new(web)
+    run_obj = type("R", (), dict(auto=True, state="done", pid=pid, agent="sre", log=[]))()
+    monkeypatch.setattr(app, "next_step", lambda p, a: "remediate")
+    started = []
+    monkeypatch.setattr(app.MANAGER, "start", lambda *a, **k: started.append(a))
+    app.MANAGER.finished(run_obj)
+    assert not started and "never started automatically" in run_obj.log[0]

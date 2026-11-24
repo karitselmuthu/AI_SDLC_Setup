@@ -175,7 +175,7 @@ def detect(ev, slos, rules, end, fresh):
                 b, h, n = top
                 pri = "Watch"
             agree = (b6 or 0) >= 1 and (b1 or 0) >= 1
-            out.append(dict(kind="burn", signal=f"{s['id']} burn rate {b:.1f}x over {h:g}h", evidence=[f"M:{s['metric']}"],
+            out.append(dict(kind="burn", signal=f"{s['id']}: burn rate {b:.1f}x over {h:g}h", evidence=[f"M:{s['metric']}"],
                             impact=f"Burning the {s['window_h']:g}h error budget {b:.1f}x faster than allowed; at this rate it is gone in {s['window_h'] / b:.1f} hours",
                             confidence=confidence(n, fresh, agree), priority=pri))
         elif s["kind"] == "latency_ms":
@@ -183,7 +183,7 @@ def detect(ev, slos, rules, end, fresh):
             over = [v for _, v in pts if v > s["objective"]]
             if pts and over:
                 share = len(over) / len(pts)
-                out.append(dict(kind="latency", signal=f"{s['id']} latency above {s['objective']:g} ms in {share:.0%} of the last hour", evidence=[f"M:{s['metric']}"],
+                out.append(dict(kind="latency", signal=f"{s['id']}: latency above {s['objective']:g} ms in {share:.0%} of the last hour", evidence=[f"M:{s['metric']}"],
                                 impact=f"worst sample {max(over):g} ms against an objective of {s['objective']:g} ms", confidence=confidence(len(pts), fresh), priority="Page" if share >= 0.5 and len(pts) >= 3 else "Ticket"))
         elif s["kind"] == "saturation":
             pts = points(series, end, 6.0)
@@ -192,7 +192,7 @@ def detect(ev, slos, rules, end, fresh):
                 limit = 100.0 if max(v for _, v in pts) > 1 else 1.0
                 eta = (limit - last) / slope if slope > 0 else None
                 if last > s["objective"] or (eta is not None and eta < 4):
-                    out.append(dict(kind="capacity", signal=f"{s['id']} saturation {last:g} against {s['objective']:g}" + (f", full in about {eta:.1f} hours" if eta is not None and eta < 24 else ""),
+                    out.append(dict(kind="capacity", signal=f"{s['id']}: saturation {last:g} against {s['objective']:g}" + (f", full in about {eta:.1f} hours" if eta is not None and eta < 24 else ""),
                                     evidence=[f"M:{s['metric']}"], impact="capacity pressure; latency and errors usually follow", confidence=confidence(len(pts), fresh),
                                     priority="Page" if eta is not None and eta < 1 else "Ticket"))
     for r in rules:  # r: dict(name, metric, op, value, for_min, severity)

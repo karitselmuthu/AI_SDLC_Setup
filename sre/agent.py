@@ -70,6 +70,11 @@ def now():
     return datetime.now(timezone.utc)  # a function so tests can set the clock
 
 
+def norm(name):
+    """An action name for matching: a model often adds a bracketed note ('Restart worker pool (one node at a time)'), which is not part of the name."""
+    return re.sub(r"\s+", " ", re.sub(r"\s*\([^)]*\)\s*$", "", clean(name))).strip().lower()
+
+
 def refs(text):
     return {m.rstrip(".:,;") for m in REF.findall(text)}
 
@@ -180,17 +185,17 @@ NOT_GIVEN = re.compile(r"(?i)^\W*(not stated|none|n/?a|unknown|-+)\W*$")
 def check_recommend(briefs, text, source=""):
     valid = known_ids(briefs) | set(re.findall(r"\b[FH]\d+\b", read(briefs, "incident-triage.md")))
     table = rows(text, "Recommendations")
-    listed = {(clean(r[0]).lower(), clean(r[2]).lower()) for r in runbook_rows(briefs)}  # (runbook, action)
+    listed = {(norm(r[0]), norm(r[2])) for r in runbook_rows(briefs)}  # (runbook, action)
     bad_rb, bad_risk, bad_ref, bad_rollback = [], [], [], []
     for r in table:
         if len(r) < 8:
-            bad_rb.append(r[0])
+            bad_rb.append(f"{r[0]} ({len(r)} cells, needs 8)")
             continue
-        act, rb, risk = clean(r[1]), clean(r[2]), r[3].strip()
-        if act.lower() in ("escalate", "gather more information") or act.lower().startswith("manual"):
+        act, rb, risk = norm(r[1]), norm(r[2]), r[3].strip()
+        if act in ("escalate", "gather more information") or act.startswith("manual"):
             pass
-        elif (rb.lower(), act.lower()) not in listed:
-            bad_rb.append(r[0])
+        elif (rb, act) not in listed:
+            bad_rb.append(f"{r[0]} (runbook '{rb}' with action '{act}' is not listed)")
         if risk not in RISKS:
             bad_risk.append(r[0])
         if not (set(re.findall(r"\b[FH]\d+\b", r[7])) & valid):
@@ -432,26 +437,26 @@ def refusal(policy, entry, name):
 def run_remediate(actions, policy_path=None, allowlist_path=None, cwd=None):
     briefs, cwd = HERE / "briefs", pathlib.Path(cwd or ".").resolve()
     gate("remediate", briefs)
-    recs = {r[0].strip(): clean(r[1]) for r in rows(read(briefs, "recommendations.md"), "Recommendations") if len(r) >= 2}
-    wanted = [recs.get(a, a) for a in actions or []]
+    recs = {r[0].strip(): norm(r[1]) for r in rows(read(briefs, "recommendations.md"), "Recommendations") if len(r) >= 2}
+    wanted = [recs.get(a, norm(a)) for a in actions or []]
     policy = load_json(policy_path, "policy") if policy_path else {}
-    allow = load_json(allowlist_path, "allowlist") if allowlist_path else {}
+    allow = {norm(k): dict(v, _name=k) for k, v in (load_json(allowlist_path, "allowlist") if allowlist_path else {}).items()}
     recorded, notes = [], []
-    recommended = {clean(r[1]).lower() for r in rows(read(briefs, "recommendations.md"), "Recommendations") if len(r) >= 2}
+    recommended = {norm(r[1]) for r in rows(read(briefs, "recommendations.md"), "Recommendations") if len(r) >= 2}
     cap = int(policy.get("max_actions", 1))
     if len(wanted) > cap:
         notes.append(f"{len(wanted) - cap} action(s) not run: the policy allows at most {cap} per authorization")
         wanted = wanted[:cap]
     for name in wanted:
         entry = allow.get(name)
-        if name.lower() not in recommended:
+        if name not in recommended:
             notes.append(f"'{name}' was not run: it is not in the approved recommendations")
         elif not entry:
             notes.append(f"'{name}' was not run: it is not on the allowlist")
         elif why := refusal(policy, entry, name):
             notes.append(f"'{name}' was not run: {why}")
         else:
-            recorded.append(do_action(briefs, name, entry, policy, cwd, policy_path, allowlist_path))
+            recorded.append(do_action(briefs, entry["_name"], entry, policy, cwd, policy_path, allowlist_path))
     if not wanted:
         notes.append("no action was requested: the agent is read-only by default, so nothing was changed")
     if actions is not None and not policy:

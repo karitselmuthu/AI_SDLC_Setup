@@ -405,3 +405,13 @@ def test_the_agent_also_works_as_a_script_not_only_as_an_imported_module(sr):
     assert r.returncode == 0 and "R1" in text(sr, "reliability-risks.md"), r.stderr[-400:]
     bad = subprocess.run([sys.executable, str(S.CODE / "agent.py"), "nonsense"], capture_output=True, text=True, env=env)
     assert bad.returncode != 0 and "Steps:" in (bad.stderr + bad.stdout)
+
+
+def test_an_action_name_matches_even_when_the_model_added_a_bracketed_note(sr):
+    sr["docs"]["STEP 1"] = CONTEXT.replace("| Restart worker pool |", "| Restart worker pool (one node at a time) |")
+    sr["docs"]["STEP 5"] = RECS.replace("| Restart worker pool |", "| Restart worker pool (one node at a time) |")
+    upto(sr, "recommend")
+    assert S.check_recommend(sr["briefs"], sr["docs"]["STEP 5"]) == ""
+    p, a, mark = files(sr)  # the allowlist uses the plain name
+    S.run_remediate(["A1"], p, a, str(sr["tmp"]))
+    assert mark.read_text().split() == ["restart", "workers-1"] and "**VERIFIED.**" in text(sr, "action-record.md")
