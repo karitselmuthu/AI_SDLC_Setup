@@ -11,7 +11,8 @@ every output is a draft, and only a named human reviewer can approve it (or send
 | **Coding agent** | Developer for one approved ticket | A reviewed code change on a new git branch, tests, pull-request text and a package for the human reviewer | 9 | `coder/agent.py` |
 | **Review agent** | Senior engineering reviewer for that change | Evidence-based findings (each cites a real file and line), a verification pass, a scorecard, and unresolved High findings routed to a person | 9 | `review/agent.py` |
 | **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
-| **Web page** | One place to enter a project and follow all four | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
+| **Release agent** | Senior release manager for the approved artifact | A release record, a readiness decision, a versioned plan, provenance, configuration status, a recorded promotion, rollout health, a rollback record and the release history | 9 | `release/agent.py` |
+| **Web page** | One place to enter a project and follow all five | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
 
 All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
 Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
@@ -19,7 +20,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 ## Contents
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
-[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Web page](#web-page) ·
+[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [Web page](#web-page) ·
 [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
@@ -38,14 +39,19 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
             v
    QA agent (10 steps)         ->  test evidence, defects, quality recommendation
                                     a person makes the release decision
+            |
+            v
+   Release agent (9 steps)     ->  readiness, plan, provenance, promotion, health, rollback, history
+                                    the Release Manager approves production; the agent never does
 ```
 
 | Agent | Who approves (each role signs separately) |
 |---|---|
 | Architect | Account lead, lead solution architect, delivery lead, security, compliance, legal, finance reviewers (depends on the step) |
 | Coding | Tech lead and ticket owner; at the end, the human code reviewer makes the merge decision |
-| Review | Senior reviewer (every step); the tech lead signs the final report and takes the disposition of unresolved Blocker and High findings |
+| Review | Senior reviewer (every step); the tech lead signs the final report and takes the disposition of unresolved Critical and High findings |
 | QA | QA lead, a developer (QA cannot approve its own findings), and a release owner who reads the recommendation |
+| Release | The Release Manager signs every record and authorizes the promotion; a deployment operator also signs the plan |
 
 Each step reads only the approved output of the steps before it. A step cannot run until the earlier ones are approved, and a document edited after
 approval is flagged. You do not have to run every step: see the [skip plan](#skip-plan-not-every-project-needs-every-step).
@@ -390,18 +396,50 @@ files only, and a model that writes "approved for release" is sent back. A perso
 
 Acceptance: `tests/test_qa_acceptance.py` has one test for each of the 18 QA cases (complete criteria, ambiguity, high risk, boundaries, roles, API, migration, cross-stack, regression, flaky, environment, privacy, security finding, unsupported stack, defect reproduction, fix retest, report integrity, untrusted input). A failing check is re-run twice and every attempt is recorded: fail then pass is FLAKY, never PASS.
 
+## Release agent (9 steps)
+
+A senior release manager for one approved artifact. It prepares and documents a controlled promotion and, **only when the Release Manager authorizes it**, runs the promotion commands the approved plan lists. It does not build the application, replace QA or code review, or approve its own production release. Two steps use a model; the other seven are plain code.
+
+| # | Step | What happens | Output | Model? |
+|---|---|---|---|---|
+| 1 | `request` | Reads the release request, change record and QA and review results into a release record. Every value (artifact, version, commit, checksum) must appear in the documents, or it says Not stated | `release-record.md` | yes |
+| 2 | `readiness` | Gates from the approved review, QA and pull-request records, the window, freeze, dependencies and rollback criteria. **Missing** evidence is told apart from **failed** evidence | `readiness.md` | no |
+| 3 | `plan` | Strategy (rolling, canary, blue-green, phased, feature-flagged), flags, configuration references, migration, the exact promotion and rollback commands, health checks with pause and rollback thresholds, communications. Versioned | `release-plan.md` | yes |
+| 4 | `provenance` | Hashes the artifact, compares it with the declared checksum, finds the source commit, and locks the release candidate | `provenance.md` | no |
+| 5 | `config` | Checks configuration and secret references are present in the target (names only, never values) | `config-status.md` | no |
+| 6 | `promote` | **Re-checks every gate now**, shows the exact commands, and runs them only after the Release Manager says yes. Stops at the first failure | `deployment-log.md` | no |
+| 7 | `monitor` | Samples the plan's health checks for its window; applies the pause and rollback thresholds | `rollout-health.md` | no |
+| 8 | `rollback` | Runs the pre-approved rollback when a rollback threshold was reached (or when a person orders it with `--manual`), then re-checks health | `recovery-record.md` | no |
+| 9 | `close` | The final version, environments, approvals, checks, outcome, incidents, rollback status and follow-ups | `release-history.md` | no |
+
+```bash
+python release/agent.py request REQUEST.md [PR.md QA.md ...]     # then readiness, plan, provenance, config, promote, monitor, rollback, close
+python release/agent.py promote --repo PATH                      # the commands run in PATH; --repo is needed for steps 4 to 8 on the page
+```
+
+What the code enforces, not the prompt:
+
+- **Production stays blocked** until every gate is met. A non-production target is blocked only by the essential gates (artifact identity, Release Manager named, rollback criteria, environment).
+- **Gates are re-checked at promotion**, not trusted from the readiness report: an artifact changed after provenance, a failed configuration reference, a missing earlier environment (`staging -> production`) or an edited approval each refuse the promotion and nothing runs.
+- **Nothing runs without the Release Manager's yes.** The authorization is pinned in the approvals ledger to the plan hash and the artifact hash. The web page's **Run all** never starts a promotion.
+- **Secrets are masked** in every command, log and report (token shapes and `NAME=value` pairs). Configuration is checked by "present or absent", never by reading the value.
+- **Plans are checked**: a destructive or pushing command (`rm -rf /`, `git push`, `curl | sh`), a `|` that would shift the table columns, an unknown strategy or an invalid health condition sends the plan back.
+- **A pause keeps sampling; only a rollback threshold stops it.** A failed promotion is not rolled back automatically: a person decides (`rollback --manual`).
+
+Acceptance: `tests/test_release.py` runs every step with tiny shell commands that write marker files, including the refusals above.
+
 ## Web page
 
 ```bash
 python web/app.py            # opens http://127.0.0.1:8765/ ; use --port N to change it, --no-open to not open a browser
 ```
 
-Enter the project name and information (and any documents), then follow the **Architect** (12 steps), the **Coder** (9), the **Review** agent (9) and **QA** (10) on one page, side by side. Each
+Enter the project name and information (and any documents), then follow the **Architect** (12 steps), the **Coder** (9), the **Review** agent (9), **QA** (10) and the **Release** agent (9) on one page, side by side. Each
 track shows every step's status, who has approved, and buttons to run the next step or all steps. **Run all** pauses at every approval, and before any step the skip plan suggests leaving out. **Skip...** records who skipped a step and why. When a step
 finishes a draft, a **Needs you** panel shows the draft and the role you are approving as: **Approve**, or **Send back** with feedback (required).
 Your click is the only thing that answers the agent's `approve? [y/N]` prompt, and it is written to the same approvals ledger the command line uses.
 Status comes from that ledger, not from what a model says. For the Coder, set the repository folder and paste the approved ticket under
-"Documents and Coder setup" (Review and QA use the same repository and ticket); the Coder's handoff step ends with a **Reviewer decision** form (the page never merges anything).
+"Documents and Coder setup" (Review, QA and Release use the same repository; add the release request as a document of kind **Release request**; the release commands run in the repository folder); the Coder's handoff step ends with a **Reviewer decision** form (the page never merges anything).
 
 Each project keeps its own files under `projects/<id>/` (git-ignored). It uses only the standard library and listens on 127.0.0.1 only, with a
 Host and Origin check and a per-run token on every change, so another web page cannot approve for you. It is not a login: anyone who can use this
@@ -414,6 +452,7 @@ architect/        Architect agent: agent.py (STEPS table, checks, approval loop)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
 review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
+release/          Release agent: agent.py (nine steps, readiness gates, provenance, gated promotion, health, rollback)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
 skipplan.py       Rules that suggest which steps a project may not need
@@ -426,7 +465,7 @@ architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.json
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py` (Release); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
@@ -508,5 +547,6 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The sample documents are made up.
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
-- Skipping a step is available on the web page only, not from the command line.
+- Skipping a step is available on the web page only, not from the command line. Release steps cannot be skipped.
+- The Release agent has been tested with tiny local shell commands, not a real deployment. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.
 - The Review agent has been checked with canned model replies and one real run on a small change. Its findings are drafts for a person: a model can still miss a defect, so it supports a human review and does not replace one.

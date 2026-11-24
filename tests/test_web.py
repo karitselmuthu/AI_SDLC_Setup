@@ -479,3 +479,37 @@ def test_the_review_track_has_nine_steps_gets_its_inputs_and_suggests_skips_from
     assert "No user-facing files" in app.suggestion(pid, "review", "accessibility") and "new" in app.suggestion(pid, "review", "interfaces")
     assert app.suggestion(pid, "review", "correctness") == ""
     assert run(web, pid, agent="review")[1] == {"started": "context"}
+
+
+def test_the_release_track_has_nine_steps_takes_the_release_request_and_commands_need_a_repository(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    assert len(v["tracks"]["release"]["steps"]) == 9 and v["tracks"]["release"]["next"] == "request"
+    assert not any(s["skippable"] for s in v["tracks"]["release"]["steps"])  # a release step is never skipped
+    p = app.load(pid)
+    with pytest.raises(ValueError, match="release request"):
+        app.step_args(p, "release", "request")
+    n = web("POST", f"/api/projects/{pid}/docs", dict(name="release-request.md", text="Version: 1.0", kind="release"))[1]
+    assert {"name": "release-request.md", "kind": "release"} in n["docs"]
+    d = tmp_path / "projects" / pid
+    (d / "qa/briefs/qa-recommendation.md").write_text("q")
+    p = app.load(pid)
+    assert app.step_args(p, "release", "request") == [str(d / "inputs/release-request.md"), str(d / "qa/briefs/qa-recommendation.md")]
+    assert app.step_args(p, "release", "readiness") == [] and app.step_args(p, "release", "plan") == [] and app.step_args(p, "release", "close") == []
+    for s in ("provenance", "config", "promote", "monitor", "rollback"):
+        with pytest.raises(ValueError, match="repository"):
+            app.step_args(p, "release", s)  # the release commands must never run in the tool's own folder
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    p = app.settings(pid, dict(repo=str(repo)))
+    assert app.step_args(p, "release", "promote") == ["--repo", str(repo.resolve())]
+
+
+def test_run_all_never_starts_a_promotion(web, monkeypatch):
+    pid = new(web)
+    run_obj = type("R", (), dict(auto=True, state="done", pid=pid, agent="release", log=[]))()
+    monkeypatch.setattr(app, "next_step", lambda p, a: "promote")
+    started = []
+    monkeypatch.setattr(app.MANAGER, "start", lambda *a, **k: started.append(a))
+    app.MANAGER.finished(run_obj)
+    assert not started and "never started automatically" in run_obj.log[0]

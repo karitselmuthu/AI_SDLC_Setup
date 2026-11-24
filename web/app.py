@@ -33,12 +33,14 @@ sys.path.insert(0, str(ROOT))
 from architect import agent as architect_agent, baseline  # noqa: E402
 from coder import agent as coder_agent, handoff  # noqa: E402
 from qa import agent as qa_agent  # noqa: E402
+from release import agent as release_agent  # noqa: E402
 from review import agent as review_agent  # noqa: E402
 import skipplan  # noqa: E402
 from coder import adapters  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
-MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent}
+MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent, "release": release_agent}
+NEVER_AUTO = {("release", "promote")}  # "Run all" never starts a promotion; a person starts it, then authorizes the exact commands
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".yaml", ".yml", ".html"}
 MAX_UPLOAD = 5_000_000
@@ -59,12 +61,16 @@ LABELS = {
                "cost": "Cost and compliance implications", "verify": "Verify the findings", "report": "Findings and scorecard"},
     "qa": {"scope": "Review requirements and scope", "risk": "Assess quality risk", "coverage": "Select test coverage", "design": "Design scenarios and data",
            "automate": "Create automated tests", "execute": "Execute and analyze tests", "explore": "Exploratory and regression testing",
-           "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"}}
+           "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"},
+    "release": {"request": "Receive the release request", "readiness": "Check release readiness", "plan": "Prepare the release plan", "provenance": "Verify artifact and provenance",
+                "config": "Validate target configuration", "promote": "Execute authorized promotion", "monitor": "Monitor rollout health", "rollback": "Roll back or recover",
+                "close": "Close the release"}}
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
             "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff", "review-areas.md"},
-            "qa": {v[1] for v in qa_agent.STEPS.values()}}
+            "qa": {v[1] for v in qa_agent.STEPS.values()},
+            "release": {v[1] for v in release_agent.STEPS.values()}}
 
 
 # ------------------------------------------------------------------------------------------------ projects
@@ -122,7 +128,7 @@ def add_doc(pid, data):
         raise ValueError("The file is empty.")
     if len(raw) > MAX_UPLOAD:
         raise ValueError("The file is larger than 5 MB.")
-    kind = "meeting" if data.get("kind") == "meeting" else "source"
+    kind = data.get("kind") if data.get("kind") in ("meeting", "release") else "source"
     (d / "inputs" / name).write_bytes(raw)
     p["docs"] = [x for x in p["docs"] if x["name"] != name] + [dict(name=name, kind=kind)]
     save(pid, p)
@@ -276,6 +282,18 @@ def step_args(p, agent, step):
                 raise ValueError("Add the client meeting notes first (use 'Add meeting notes'). If there was no meeting, add a note that says so.")
             return notes
         return src + notes if step == "handoff" else []
+    if agent == "release":
+        if step in ("request",):
+            asks = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "release"]
+            if not asks:
+                raise ValueError("Add the release request first (under Documents, add it as 'Release request').")
+            more = [str(pdir(p["id"]) / a / "briefs" / f) for a, f in (("coder", "pull-request.md"), ("qa", "qa-recommendation.md"), ("review", "review-report.md")) if (pdir(p["id"]) / a / "briefs" / f).exists()]
+            return asks + more
+        if step in ("provenance", "config", "promote", "monitor", "rollback"):
+            if not p["repo"]:
+                raise ValueError("Set the repository folder first (under 'Coder setup'): the release commands run there.")
+            return ["--repo", p["repo"]]
+        return []
     if agent in ("qa", "review") and step in ("recommend", "report"):
         return []
     if not p["repo"]:
@@ -404,6 +422,10 @@ class Manager:
 
     def finished(self, run):
         if run.auto and run.state == "done" and (step := next_step(run.pid, run.agent)):
+            if (run.agent, step) in NEVER_AUTO:
+                with LOCK:
+                    run.log.append(f"[auto] paused before {step}: a promotion is never started automatically. Start it from the page, then authorize the commands.")
+                return
             if why := next(x["suggest"] for x in steps_status(run.pid, run.agent) if x["name"] == step):
                 with LOCK:
                     run.log.append(f"[auto] paused before {step}: it may not be needed ({why}) Skip it or run it from the page.")
