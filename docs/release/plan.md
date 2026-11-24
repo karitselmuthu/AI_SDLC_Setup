@@ -1,0 +1,27 @@
+STEP 3 - Prepare the release plan.
+Read the approved release record and write a reviewable release plan for the target environment in it. A table cell cannot contain the | character, so a command with a pipe goes in a script the plan names. Use only commands and names the source documents or the repository show; if the deployment tooling is not described, write "Not stated" in the command cell rather than guessing.
+
+Sections, in this order:
+## Status
+## Rollout sequence
+Numbered steps, who does each, the target environment and the version.
+## Deployment strategy
+First line exactly `Strategy: <one of rolling, canary, blue-green, phased, feature-flagged>`, then why.
+## Feature flags
+Table `| Flag | State at release | Owner |` or "None used".
+## Configuration references
+Table `| Name | Kind | Check command |`. Kind is `config` or `secret`. Names and references only, never values. Check command is a command that exits 0 when the reference is present in the target environment, or "Not checkable here".
+## Migration steps
+Numbered list, or "None".
+## Promotion commands
+Table `| Step | Command | Purpose |` in the order they run. These are run by the system only after the Release Manager approves the exact list.
+## Health checks
+Table `| Check | Command | Pass condition | Pause after | Roll back after |`. Pass condition is exactly `exit 0` or `value <= N` (also `>=`, `<`, `>`, `==`; the command prints the number last). Pause after and Roll back after are whole numbers of consecutive failures (the pause column may be `-`).
+## Monitoring window
+Exactly `Window: N samples every S seconds`.
+## Rollback
+Table `| Step | Command | Purpose |` that restores the previous version. Pre-approved with this plan; the system runs it only when a Roll back after threshold is reached.
+## Communications
+Table `| Audience | Message | When |` for operators and stakeholders.
+## Success criteria
+Bullet list a person can check.
