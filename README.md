@@ -319,7 +319,7 @@ Every step writes to `review/briefs/`, and a named person approves it.
 | 6 | `accessibility` | Semantics, keyboard access, labels, focus, contrast, for user-facing changes | `accessibility-findings.md` | yes |
 | 7 | `cost` | Code-level cost drivers and possible effects on stated compliance controls | `cost-compliance-findings.md` | yes |
 | 8 | `verify` | Re-reads the code for every finding: Confirmed, Handled elsewhere, Question, Recommendation or Withdrawn | `verification.md` | yes |
-| 9 | `report` | The scorecard, the list routed for human disposition, coverage and limitations | `review-report.md` | no |
+| 9 | `report` | The review summary and overall status, prioritized findings, a scorecard by dimension (correctness, design fit, security, privacy, maintainability, reliability, accessibility, cost, compliance applicability), the findings routed for human disposition, coverage and limitations | `review-report.md` | no |
 
 ```bash
 python review/agent.py context TICKET [FILE...] --repo PATH [--base REF]   # default: the uncommitted work; --base compares against a commit or branch
@@ -359,6 +359,9 @@ Rules enforced by code, not by the prompt alone:
 - The agent may not say "approved", "LGTM" or "safe to merge", and may not claim a change is compliant: code inspection cannot establish formal compliance.
 - The scanner (secrets, unsafe defaults, leftovers) runs on the diff in plain code and its terms are mapped to the scale (Blocker is Critical, Should fix is Medium, Check is Informational). Scanner Critical findings go straight to the routed list, with secrets masked.
 - The scorecard counts, the routed list ("Critical or High and still standing after verification") and the coverage table are computed from the approved records. The tech lead signs the final report and takes the disposition of every routed finding.
+- Speculation is never a defect: a Confirmed finding that says "may", "could" or "potentially" is sent back. Without a `file:line` that exists, a finding is shown as an unverified question (Informational), never with a defect severity. A missing audit event needs a cited requirement or control; a cost figure, percentage or compliance verdict is refused.
+- A change that touches an interface, schema or migration file must be addressed in the interface findings; instructions planted in the changed files are scanned as data like the README and the ticket.
+- If the ticket has no acceptance criteria, or no design or pull-request text was supplied, the report says design-fit review is limited and names the missing inputs. A large or mixed-stack change is reported as not completely covered.
 - Accessibility, interfaces and cost can be skipped when the change has nothing for them (see the skip plan); the report lists what was skipped, by whom and why.
 
 ## QA agent (10 steps)
@@ -423,7 +426,7 @@ architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.json
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_review.py` (Review); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
