@@ -527,15 +527,20 @@ def test_the_sre_track_has_nine_steps_takes_its_documents_and_never_changes_prod
                              ("note.md", "checkout failing", "incident"), ("after.csv", "time,metric,value\n", "recovery"), ("p.json", "{}", "policy"), ("a.json", "{}", "allowlist")):
         assert web("POST", f"/api/projects/{pid}/docs", dict(name=name, text=text, kind=kind))[0] == 200
     d, p = tmp_path / "projects" / pid / "inputs", app.load(pid)
-    assert app.step_args(p, "sre", "context") == [str(d / "catalog.md")] and app.step_args(p, "sre", "triage") == [str(d / "note.md")]
+    assert app.step_args(p, "sre", "context") == [str(d / "catalog.md")]
+    with pytest.raises(ValueError, match="Open an incident"):
+        app.step_args(p, "sre", "triage")
+    p["incident"] = "INC-20261124-01"
+    assert app.step_args(p, "sre", "triage") == [str(d / "note.md"), "--incident", "INC-20261124-01"]
     assert app.step_args(p, "sre", "health") == ["--metrics", str(d / "m.csv"), "--events", str(d / "e.jsonl"), "--logs", str(d / "l.log")]
-    assert app.step_args(p, "sre", "recovery") == ["--metrics", str(d / "after.csv")]
-    assert app.step_args(p, "sre", "risks") == [] and app.step_args(p, "sre", "remediate") == []  # no action requested: read-only
+    assert app.step_args(p, "sre", "recovery") == ["--metrics", str(d / "after.csv"), "--incident", "INC-20261124-01"]
+    assert app.step_args(p, "sre", "risks") == [] and app.step_args(p, "sre", "remediate") == ["--incident", "INC-20261124-01"]  # no action requested: read-only
     repo = tmp_path / "r"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     p = app.settings(pid, dict(repo=str(repo), actions=["Restart worker pool", ""]))
     assert p["actions"] == ["Restart worker pool"]
-    assert app.step_args(p, "sre", "remediate") == ["--policy", str(d / "p.json"), "--allowlist", str(d / "a.json"), "--repo", str(repo.resolve()), "--action", "Restart worker pool"]
+    p["incident"] = "INC-20261124-01"
+    assert app.step_args(p, "sre", "remediate") == ["--policy", str(d / "p.json"), "--allowlist", str(d / "a.json"), "--repo", str(repo.resolve()), "--action", "Restart worker pool", "--incident", "INC-20261124-01"]
     p["docs"] = [x for x in p["docs"] if x["kind"] != "allowlist"]
     with pytest.raises(ValueError, match="allowlist"):
         app.step_args(p, "sre", "remediate")  # an action is requested but the allowlist is missing: refuse, never improvise
@@ -549,3 +554,23 @@ def test_run_all_never_starts_a_production_change_for_the_sre_agent(web, monkeyp
     monkeypatch.setattr(app.MANAGER, "start", lambda *a, **k: started.append(a))
     app.MANAGER.finished(run_obj)
     assert not started and "never started automatically" in run_obj.log[0]
+
+
+def test_sre_incident_steps_follow_the_selected_incident_and_the_service_steps_do_not(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    st = {x["name"]: x for x in v["tracks"]["sre"]["steps"]}
+    assert v["incidents"] == [] and st["triage"]["text"] == "Open an incident first" and not st["triage"]["ready"] and st["context"]["text"] != "Open an incident first"
+    code, body = web("POST", f"/api/projects/{pid}/incident", dict(title="Checkout errors"))
+    assert code == 400 and "service record" in str(body)  # the service record is not approved yet, so an incident cannot be opened
+    assert web("POST", f"/api/projects/{pid}/incident", dict(select="INC-1"))[0] == 400
+    inc = tmp_path / "projects" / pid / "sre" / "incidents" / "INC-20261124-01"
+    (inc / "briefs").mkdir(parents=True)
+    (inc / "incident.json").write_text(json.dumps(dict(id="INC-20261124-01", title="Checkout errors", status="open")))
+    (inc / "briefs" / "incident-triage.md").write_text("## Status\nDraft.\n")
+    assert web("POST", f"/api/projects/{pid}/incident", dict(select="INC-20261124-01"))[0] == 200
+    v = view(web, pid)
+    st = {x["name"]: x for x in v["tracks"]["sre"]["steps"]}
+    assert v["incidents"][0]["title"] == "Checkout errors" and v["project"]["incident"] == "INC-20261124-01" and st["triage"]["produced"] and st["triage"]["text"] != "Open an incident first"
+    assert web("GET", f"/api/projects/{pid}/doc?agent=sre&file=incident-triage.md")[1]["text"].startswith("## Status")
+    assert web("GET", f"/api/projects/{pid}/doc?agent=sre&file=service-context.md")[1]["text"] == ""  # service files are read from the service folder

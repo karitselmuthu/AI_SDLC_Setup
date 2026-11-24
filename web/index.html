@@ -114,7 +114,7 @@ async function refresh(){if(!cur)return;try{view=await api("GET","/api/projects/
 function render(){const p=view.project;document.title=(view.run&&view.run.pending?"● Needs you · ":"")+"AI SDLC Tracker";$("pname").textContent=p.name;$("pdesc").textContent=p.description;fillSetup();
  $("note").replaceChildren(...(p.note?[h("div",{class:"card",style:"border-color:var(--warn)"},h("b",{},"Please read: "),p.note)]:[]));
  const busy=view.run&&["running","awaiting"].includes(view.run.state);
- track("Architect","architect",$("tArchitect"),busy);track("Coder","coder",$("tCoder"),busy);track("Review","review",$("tReview"),busy);track("QA","qa",$("tQa"),busy);track("Release","release",$("tRelease"),busy);track("SRE","sre",$("tSre"),busy);needs();banner();handoffCard();
+ track("Architect","architect",$("tArchitect"),busy);track("Coder","coder",$("tCoder"),busy);track("Review","review",$("tReview"),busy);track("QA","qa",$("tQa"),busy);track("Release","release",$("tRelease"),busy);track("SRE","sre",$("tSre"),busy);sreBar($("tSre"),busy);needs();banner();handoffCard();
  $("log").textContent=view.run&&view.run.log.length?view.run.log.join("\n"):"Nothing has run yet.";$("log").scrollTop=1e9}
 function track(title,agent,el,busy){const t=view.tracks[agent];const nxt=t.next;
  el.replaceChildren(h("div",{class:"row"},h("h2",{class:"grow",style:"margin:0"},`${title} (${t.approved} of ${t.total} approved${t.skipped?`, ${t.skipped} skipped`:""})`)),
@@ -124,6 +124,13 @@ function track(title,agent,el,busy){const t=view.tracks[agent];const nxt=t.next;
    h("div",{},h("span",{class:"name"},`${i+1}. ${s.label} `),h("span",{class:"chip s-"+s.status},s.text),...(s.suggest?[h("div",{class:"roles",style:"color:var(--warn)"},"Suggested skip: "+s.suggest)]:[]),h("div",{class:"roles"},"Approvals: ",s.roles.map((r,k)=>[k?"; ":"",r.approved?h("b",{},"✓ "+r.role.split(" (")[0]):r.role.split(" (")[0]]))),
    h("div",{class:"row"},...(s.skippable?[h("button",{disabled:busy||!s.ready,title:"Leave this step out; you are asked for your name and a reason, and it is recorded",onclick:()=>skip(agent,s)},"Skip…")]:[]),h("button",{disabled:busy||!s.ready,title:s.ready?"":"An earlier step must be approved first",onclick:()=>run(agent,s.name,false)},s.status==="todo"?"Run":"Run again"),h("button",{disabled:!s.produced,onclick:()=>openDoc(agent,s)},"View")))))
  )}
+function sreBar(el,busy){const cur_=view.project.incident||"",ids=view.incidents||[];
+ const sel=h("select",{onchange:async e=>{try{await api("POST",`/api/projects/${cur}/incident`,{select:e.target.value});await refresh()}catch(x){alert(x.message)}}},ids.length?ids.map(i=>h("option",{value:i.id,...(i.id===cur_?{selected:true}:{})},`${i.id} (${i.status}): ${i.title}`)):[h("option",{},"no incident yet")]);
+ const title=h("input",{type:"text",placeholder:"Short title for a new incident",style:"flex:1"});
+ const open_=h("button",{disabled:busy,onclick:async()=>{try{const r=await api("POST",`/api/projects/${cur}/incident`,{title:title.value});title.value="";alert(r.message);await refresh()}catch(x){alert(x.message)}}},"Open incident");
+ const pin=h("button",{disabled:busy||!cur_,title:"Bring the latest approved service record into this incident. Steps approved on the old record become stale.",onclick:async()=>{try{const r=await api("POST",`/api/projects/${cur}/incident`,{pin:true});alert(r.message);await refresh()}catch(x){alert(x.message)}}},"Use latest service record");
+ el.insertBefore(h("div",{class:"row",style:"margin:8px 0"},sel,title,open_,pin),el.children[2]);
+ el.insertBefore(h("div",{class:"roles"},"Service steps (1 to 3) can be refreshed any time. Incident steps (4 to 9) belong to the selected incident and keep the service record it was opened with."),el.children[2])}
 async function run(agent,step,auto){try{await api("POST",`/api/projects/${cur}/run`,{agent,step,auto});await refresh()}catch(e){alert(e.message)}}
 async function skip(agent,s){const name=prompt(`Skip "${s.label}"? Your name (it is recorded):`);if(!name)return;
  const reason=prompt("Why is this step not needed? (recorded with your name)",s.suggest||"");if(!reason)return;

@@ -67,9 +67,9 @@ LABELS = {
     "release": {"request": "Receive the release request", "readiness": "Check release readiness", "plan": "Prepare the release plan", "provenance": "Verify artifact and provenance",
                 "config": "Validate target configuration", "promote": "Execute authorized promotion", "monitor": "Monitor rollout health", "rollback": "Roll back or recover",
                 "close": "Close the release"},
-    "sre": {"context": "Establish service context", "health": "Observe service health", "risks": "Detect reliability risks", "triage": "Triage the incident",
-            "recommend": "Recommend response actions", "remediate": "Authorized remediation", "updates": "Incident updates", "recovery": "Recovery and closure",
-            "review": "Learn and improve"}}
+    "sre": {"context": "Service: establish context", "health": "Service: observe health", "risks": "Service: detect risks", "triage": "Incident: triage",
+            "recommend": "Incident: recommend actions", "remediate": "Incident: authorized remediation", "updates": "Incident: updates", "recovery": "Incident: recovery and closure",
+            "review": "Incident: learn and improve"}}
 SOURCE_STEPS = {"qualify", "discover", "assess", "options", "fit", "economics", "proposal"}  # architect steps that read the source documents
 READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "coder": {v[1] for v in coder_agent.STEPS.values()} | {"change.diff", "handoff-decisions.log"},
@@ -183,10 +183,31 @@ def classify(problems):
     return "stale", "Out of date: an earlier step was approved again"
 
 
+def briefs_of(pid, agent, step=None):
+    """Where a step's files are. The SRE service record is shared; each SRE incident has its own folder, and the selected one is used. None: no incident yet."""
+    d = pdir(pid) / agent
+    if agent != "sre":
+        return d / "briefs"
+    if step in sre_agent.SERVICE_STEPS:
+        return d / "service" / "briefs"
+    inc = load(pid).get("incident")
+    return d / "incidents" / inc / "briefs" if inc and (d / "incidents" / inc / "incident.json").exists() else None
+
+
+def sre_incidents(pid):
+    root = pdir(pid) / "sre" / "incidents"
+    return [json.loads((f).read_text()) | {"id": f.parent.name} for f in sorted(root.glob("INC-*/incident.json"))] if root.exists() else []
+
+
 def steps_status(pid, agent):
-    mod, briefs, out = MODS[agent], pdir(pid) / agent / "briefs", []
+    mod, out = MODS[agent], []
     for name, (_, file, reviewers, prior) in mod.STEPS.items():
         roles = reviewers if isinstance(reviewers, list) else [reviewers]
+        briefs = briefs_of(pid, agent, name)
+        if briefs is None:
+            out.append(dict(name=name, label=LABELS[agent][name], file=file, status="todo", text="Open an incident first", ready=False, produced=False,
+                            roles=[dict(role=r, approved=False) for r in roles], skippable=False, suggest=""))
+            continue
         code, text = classify(baseline.problems(briefs, {name: mod.STEPS[name]}))
         ready = not baseline.problems(briefs, {s: v for s, v in mod.STEPS.items() if v[1] in prior})
         sha = baseline.latest(briefs).get(file, {}).get("sha256")
@@ -291,29 +312,42 @@ def step_args(p, agent, step):
             return notes
         return src + notes if step == "handoff" else []
     if agent == "sre":
-        of = lambda kind: [str(d / x["name"]) for x in p["docs"] if x["kind"] == kind]
-        if step == "context":
-            if not of("sre"):
-                raise ValueError("Add the service catalog entry first (under Documents, add it as 'SRE service document'; add runbooks, SLOs and alert rules the same way).")
-            return of("sre")
-        if step in ("health", "recovery"):
-            ev = of("evidence" if step == "health" else "recovery")
-            if not any(f.endswith(".csv") for f in ev):
-                raise ValueError("Add a metrics snapshot first (a .csv with time,metric,value) as " + ("'SRE evidence'." if step == "health" else "'SRE recovery evidence' (a newer snapshot taken after the action)."))
-            return [a for f in ev for a in ((("--metrics" if f.endswith(".csv") else "--events" if f.endswith(".jsonl") else "--logs"), f))]
-        if step == "triage":
-            if not of("incident"):
-                raise ValueError("Add the incident note first (under Documents, add it as 'SRE incident note').")
-            return of("incident")
-        if step == "remediate":
-            acts = [a for a in p.get("actions", []) if a]
-            pol, al = of("policy"), of("allowlist")
-            if not acts:
-                return []  # read-only: nothing is requested, so nothing is changed
-            if not (pol and al and p["repo"]):
-                raise ValueError("To authorize an action, add a policy and an allowlist (as 'SRE policy' and 'SRE allowlist') and set the repository folder: the action's command runs there.")
-            return ["--policy", pol[0], "--allowlist", al[0], "--repo", p["repo"], *[a for x in acts for a in ("--action", x)]]
-        return []
+        args = sre_args(p, d, step)
+        if step not in sre_agent.SERVICE_STEPS:
+            if not p.get("incident"):
+                raise ValueError("Open an incident first (the SRE card has an Open incident button).")
+            args += ["--incident", p["incident"]]
+        return args
+    return step_args_rest(p, agent, step, d, src, notes)
+
+
+def sre_args(p, d, step):
+    of = lambda kind: [str(d / x["name"]) for x in p["docs"] if x["kind"] == kind]
+    if step == "context":
+        if not of("sre"):
+            raise ValueError("Add the service catalog entry first (under Documents, add it as 'SRE service document'; add runbooks, SLOs and alert rules the same way).")
+        return of("sre")
+    if step in ("health", "recovery"):
+        ev = of("evidence" if step == "health" else "recovery")
+        if not any(f.endswith(".csv") for f in ev):
+            raise ValueError("Add a metrics snapshot first (a .csv with time,metric,value) as " + ("'SRE evidence'." if step == "health" else "'SRE recovery evidence' (a newer snapshot taken after the action)."))
+        return [a for f in ev for a in ((("--metrics" if f.endswith(".csv") else "--events" if f.endswith(".jsonl") else "--logs"), f))]
+    if step == "triage":
+        if not of("incident"):
+            raise ValueError("Add the incident note first (under Documents, add it as 'SRE incident note').")
+        return of("incident")
+    if step == "remediate":
+        acts = [a for a in p.get("actions", []) if a]
+        pol, al = of("policy"), of("allowlist")
+        if not acts:
+            return []  # read-only: nothing is requested, so nothing is changed
+        if not (pol and al and p["repo"]):
+            raise ValueError("To authorize an action, add a policy and an allowlist (as 'SRE policy' and 'SRE allowlist') and set the repository folder: the action's command runs there.")
+        return ["--policy", pol[0], "--allowlist", al[0], "--repo", p["repo"], *[a for x in acts for a in ("--action", x)]]
+    return []
+
+
+def step_args_rest(p, agent, step, d, src, notes):
     if agent == "release":
         if step in ("request",):
             asks = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "release"]
@@ -493,7 +527,37 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand)
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid))
+
+
+def incident_action(pid, data):
+    """Open an incident, select one or bring the latest service record into it. All by the SRE agent's own command, so the page and the command line cannot disagree."""
+    if MANAGER.active(pid):
+        raise ValueError("A step is running. Answer it or stop it first.")
+    run = lambda *a: subprocess.run([sys.executable, str(ROOT / "sre" / "agent.py"), "incident", *a], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                    env=dict(os.environ, SDLC_WORKSPACE=str(pdir(pid))), cwd=str(pdir(pid)))
+    p = load(pid)
+    if data.get("select"):
+        if data["select"] not in [i["id"] for i in sre_incidents(pid)]:
+            raise ValueError("No such incident.")
+        p["incident"] = data["select"]
+        save(pid, p)
+        return dict(incident=p["incident"], message="")
+    if data.get("pin"):
+        if not p.get("incident"):
+            raise ValueError("Select an incident first.")
+        r = run("pin", "--incident", p["incident"])
+        if r.returncode:
+            raise ValueError((r.stdout + r.stderr).strip()[-400:])
+        return dict(incident=p["incident"], message=r.stdout.strip())
+    title = (data.get("title") or "").strip()[:120]
+    r = run("open", title)
+    if r.returncode:
+        raise ValueError((r.stdout + r.stderr).strip()[-500:])
+    m = re.search(r"opened (INC-\d+-\d+)", r.stdout)
+    p["incident"] = m.group(1)
+    save(pid, p)
+    return dict(incident=p["incident"], message=r.stdout.strip())
 
 
 def handoff_decision(pid, data):
@@ -570,7 +634,10 @@ class Handler(BaseHTTPRequestHandler):
                 agent, file = (q.get("agent") or [""])[0], (q.get("file") or [""])[0]
                 if agent not in READABLE or file not in READABLE[agent]:
                     return self._send(404, {"error": "No such document."})
-                f = pdir(m.group(1)) / agent / "briefs" / file
+                base = briefs_of(m.group(1), agent, next((n for n, v in MODS[agent].STEPS.items() if v[1] == file), None))
+                if base is None:
+                    return self._send(200, dict(file=file, text=""))
+                f = base / file
                 return self._send(200, dict(file=file, text=f.read_text(errors="replace") if f.exists() else ""))
             self._send(404, {"error": "Not found."})
         except KeyError as e:
@@ -587,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path).path
             if u == "/api/projects":
                 return self._send(200, create(data))
-            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision|skip)", u)
+            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision|skip|incident)", u)
             if not m:
                 return self._send(404, {"error": "Not found."})
             pid, act = m.groups()
@@ -598,6 +665,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, settings(pid, data))
             if act == "skip":
                 return self._send(200, skip(pid, data))
+            if act == "incident":
+                return self._send(200, incident_action(pid, data))
             if act == "run":
                 agent = data.get("agent")
                 step = data.get("step") if data.get("step") not in (None, "next") else (next_step(pid, agent) if agent in MODS else None)
