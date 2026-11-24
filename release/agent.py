@@ -99,6 +99,11 @@ def clean(v):
     return (v or "").strip().strip("`").strip()
 
 
+def shell_cmd(cell):
+    """A command from a table cell. Models wrap commands in markdown backticks; passed to a shell those mean command substitution, so they are removed."""
+    return clean(cell)
+
+
 def stated(v):
     return bool(clean(v)) and not NOT_STATED.match(clean(v))
 
@@ -131,8 +136,8 @@ def check_plan(briefs, text, repo, source=""):
     m = re.search(r"(?im)^Strategy:\s*([\w-]+)", C.section(text, "Deployment strategy"))
     bad += "" if m and m.group(1).lower() in STRATEGIES else f"Deployment strategy must start with 'Strategy:' and one of {', '.join(STRATEGIES)}. "
     for title in ("Promotion commands", "Rollback"):
-        cmds = [r for r in rows(text, title) if len(r) > 1 and stated(r[1])]
-        bad += "" if cmds else f"'{title}' needs at least one row with a real command; a plan without it cannot be run. "
+        found = [r for r in rows(text, title) if len(r) > 1 and stated(r[1])]
+        bad += "" if found else f"'{title}' needs at least one row with a real command; a plan without it cannot be run. "
     hc = rows(text, "Health checks")
     bad_hc = [r[0] for r in hc if len(r) < 5 or not GOOD_HEALTH.fullmatch(r[2].strip()) or not re.fullmatch(r"\d+|-", r[3].strip()) or not re.fullmatch(r"\d+", r[4].strip())]
     bad += ("" if hc else "Health checks has no row. ") + (f"Health check(s) {', '.join(bad_hc)}: pass condition must be 'exit 0' or 'value <= N', and the pause and rollback columns whole numbers. " if bad_hc else "")
@@ -141,8 +146,11 @@ def check_plan(briefs, text, repo, source=""):
     shape = [t for t, n in (("Promotion commands", 3), ("Rollback", 3), ("Health checks", 5), ("Configuration references", 3), ("Communications", 3)) if any(len(r) != n for r in rows(text, t))]
     bad += (f"These tables have a row with the wrong number of cells: {', '.join(shape)}. A command cannot contain the | character (it splits the cell and shifts the columns); "
             "put pipelines in a script and name the script. " if shape else "")
-    cmds = [r[1] for t in ("Promotion commands", "Rollback") for r in rows(text, t) if len(r) > 1] + [r[2] for r in rows(text, "Configuration references") if len(r) > 2]
+    cmds = [shell_cmd(r[1]) for t in ("Promotion commands", "Rollback") for r in rows(text, t) if len(r) > 1] + [shell_cmd(r[2]) for r in rows(text, "Configuration references") if len(r) > 2]
+    cmds += [shell_cmd(r[1]) for r in hc if len(r) > 1]
     scary = [c for c in cmds if DESTRUCTIVE.search(c)]
+    ticks = [c for c in cmds if "`" in c]
+    bad += f"These commands contain a backtick inside the command ({'; '.join(ticks)[:120]}), which a shell runs as command substitution; remove it. " if ticks else ""
     bad += f"These commands look destructive or push code ({'; '.join(scary)[:200]}). A release plan promotes an existing artifact; remove them. " if scary else ""
     bad += "" if all(len(r) > 1 and r[1].lower() in ("config", "secret") for r in rows(text, "Configuration references")) else "Configuration references: Kind must be config or secret. "
     return Q.tail(bad + Q.privacy(text))
@@ -224,9 +232,12 @@ def readiness_text(briefs):
     g, p, block = gates(briefs), prod(briefs), blockers(briefs)
     unmet, miss = [x for x in g if x[1] == "UNMET"], [x for x in g if x[1] == "MISSING"]
     env = clean(fields(briefs).get("Target environment", "Not stated"))
+    others = [x for x in g if x[1] != "MET" and x not in block]  # not required for this target, but they would block production
     decision = (f"**BLOCKED for {env}.** {len(unmet)} gate(s) failed and {len(miss)} lack evidence. "
                 + ("Production stays blocked until every gate is met." if p else "These gates must be met first: " + ", ".join(b[0] for b in block) + ".")
-                if block else f"**READY for the Release Manager's decision on {env}.** Every required gate is met. This is a readiness finding, not an approval; only the Release Manager approves.")
+                if block else f"**READY for the Release Manager's decision on {env}" + (" on the essential gates only" if others else "") + ".** "
+                + (f"{len(others)} other gate(s) are not met and would block production: {', '.join(x[0] for x in others)}. " if others else "Every required gate is met. ")
+                + "This is a readiness finding, not an approval; only the Release Manager approves.")
     cells = "\n".join(f"| {a} | {b} | {c} | {d or '-'} |" for a, b, c, d, _ in g)
     return "\n\n".join(["# Release readiness", "## Status\nDraft, pending review by the Release Manager. The agent checks readiness; it does not approve a release.", "## Decision\n" + decision,
                         "## Gates\n| Gate | State | Evidence | What is needed |\n|---|---|---|---|\n" + cells,
@@ -283,10 +294,15 @@ def run_step(name, files):
     gate(name, briefs)
     if name == "request" and not files:
         sys.exit("request: pass the release request first, then the pull request, QA and review reports or any other document.")
+    saved = briefs / "sources.json"
+    if name != "request" and not files and saved.exists():
+        files = json.loads(saved.read_text())  # the release request and its documents, as given at step 1: the plan needs the deployment tooling written there
     docs = [pathlib.Path(f).resolve() for f in files]
     if missing := [str(d) for d in docs if not d.is_file()]:
         sys.exit(f"not found: {missing}")
     briefs.mkdir(parents=True, exist_ok=True)
+    if name == "request":
+        saved.write_text(json.dumps([str(d) for d in docs]))
     out = briefs / out_name
     Q.archive(out)
     core.EXTRA_DIRS.extend({str(d.parent) for d in docs} | {str(briefs)})
@@ -300,12 +316,14 @@ def run_step(name, files):
     note = ""
     while True:
         text = C.need_document(name, ask("release", head + note), "Status")
-        gaps = [CHECKS[name](briefs, text, None, source), false_approval(None, text)]
+        gaps = [CHECKS[name](briefs, text, None, source), false_approval(None, re.sub(r"(?ms)^## Approvals stated in the request\n.*?(?=^## |\Z)", "", text))]  # that section quotes what documents claim
         if flags and "Source-document anomalies" not in text:
             gaps.append("Add a '## Source-document anomalies' section (file, quote, ignored). Reply with the complete updated document.")
         if gap := "\n".join(filter(None, gaps)):
             print("repair pass (one extra model call):", gap[:300].replace("\n", " "))
             text = C.need_document(name, ask("release", gap), "Status")
+            if left := CHECKS[name](briefs, text, None, source):
+                print("STILL WRONG after the repair pass. Send it back with feedback before approving:", left[:300].replace("\n", " "))
         if name == "plan":
             n = len(list((briefs / "history").glob("release-plan.*.md"))) + 1 if (briefs / "history").exists() else 1
             text = re.sub(r"(?ms)^## Version\n.*?(?=^## |\Z)", "", text).rstrip() + f"\n\n## Version\nPlan version {n}. Set by the system; any edit is a new version and needs new approvals.\n"
@@ -402,9 +420,9 @@ def run_config(repo=None):
     runnable = [r for r in refs if stated(r[2]) and not re.search(r"(?i)not checkable", r[2])]
     res = {}
     if runnable:
-        print(f"Configuration checks to run in {repo} (they report present or absent; secret values are never put in the report):\n" + "\n".join(f"  $ {scrub(r[2])}" for r in runnable))
+        print(f"Configuration checks to run in {repo} (they report present or absent; secret values are never put in the report):\n" + "\n".join(f"  $ {scrub(shell_cmd(r[2]))}" for r in runnable))
         if approve(f"{MANAGER.split(' (')[0]} approves running these checks"):
-            res = {r[0]: run_cmd(r[2], repo) for r in runnable}
+            res = {r[0]: run_cmd(shell_cmd(r[2]), repo) for r in runnable}
     failed = [r[0] for r in refs if r[0] in res and res[r[0]]["rc"] != 0]
     unchecked = [r[0] for r in refs if r[0] not in res]
     table = "\n".join(f"| {r[0]} | {r[1]} | " + ("FAIL | missing or unreadable" if r[0] in failed else "NOT CHECKED | no check was run for this reference" if r[0] in unchecked else "PASS | present") + " |" for r in refs)
@@ -435,6 +453,8 @@ def promotion_refusals(briefs, repo):
     f, why = fields(briefs), [f"{g[0]}: {g[1]} ({g[2]})" for g in blockers(briefs)]
     env, p = clean(f.get("Target environment", "")), prod(briefs)
     lock = json.loads(lock_path(briefs).read_text()) if lock_path(briefs).exists() else None
+    if left := check_plan(briefs, plan_text(briefs), None):
+        why.append("Plan: it fails its own checks and cannot be run: " + left.replace("Reply with the complete updated document, same sections.", "").strip()[:200])
     if p and not lock:
         why.append("Provenance: the release candidate is not locked (provenance was not VERIFIED)")
     if lock and lock["hashed"]:
@@ -467,7 +487,7 @@ def run_promote(repo=None):
         sys.exit("Promotion refused (re-checked now, not taken from the readiness report):\n  " + "\n  ".join(why))
     f, plan = fields(briefs), plan_text(briefs)
     env, version = clean(f["Target environment"]), clean(f["Version"])
-    cmds = [r[1] for r in rows(plan, "Promotion commands") if len(r) > 1 and stated(r[1])]
+    cmds = [shell_cmd(r[1]) for r in rows(plan, "Promotion commands") if len(r) > 1 and stated(r[1])]
     plan_hash = baseline.sha256(briefs / "release-plan.md")
     print(f"Promote {version} to {env} from {repo}, plan {plan_hash[:12]}. Commands, in order:\n" + "\n".join(f"  {i}. $ {scrub(c)}" for i, c in enumerate(cmds, 1)))
     warn = [w for w, hit in (("configuration is INCOMPLETE: some references were not checked", "**INCOMPLETE." in (briefs / "config-status.md").read_text()),
@@ -522,7 +542,7 @@ def run_monitor(repo=None):
     else:
         for i in range(n):
             for r in checks:
-                res = run_cmd(r[1], repo, timeout=120)
+                res = run_cmd(shell_cmd(r[1]), repo, timeout=120)
                 ok = passes(r[2], res["rc"], res["out"])
                 streak[r[0]] = 0 if ok else streak[r[0]] + 1
                 worst[r[0]] = max(worst[r[0]], streak[r[0]])
@@ -556,7 +576,7 @@ def run_rollback(manual=False, repo=None):
     briefs, repo = HERE / "briefs", pathlib.Path(repo or ".").resolve()
     gate("rollback", briefs)
     v, plan = verdict_of(briefs), plan_text(briefs)
-    cmds = [r[1] for r in rows(plan, "Rollback") if len(r) > 1 and stated(r[1])]
+    cmds = [shell_cmd(r[1]) for r in rows(plan, "Rollback") if len(r) > 1 and stated(r[1])]
     go, how = False, ""
     if v == "ROLLBACK" and authorized(briefs):
         go, how = True, "the approved plan's rollback threshold was reached (pre-approved with the plan, no extra prompt)"
@@ -572,7 +592,7 @@ def run_rollback(manual=False, repo=None):
     after = []
     if go and len(res) == len(cmds) and all(r["rc"] == 0 for r in res):
         for r in (r for r in rows(plan, "Health checks") if len(r) >= 5):
-            x = run_cmd(r[1], repo, 120)
+            x = run_cmd(shell_cmd(r[1]), repo, 120)
             after.append((r[0], passes(r[2], x["rc"], x["out"])))
     healthy = bool(after) and all(ok for _, ok in after)
     state = ("RECOVERED" if healthy else "RECOVERY INCOMPLETE OR UNSAFE") if go else "NOT REQUIRED"

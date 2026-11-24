@@ -1,5 +1,5 @@
 STEP 3 - Prepare the release plan.
-Read the approved release record and write a reviewable release plan for the target environment in it. A table cell cannot contain the | character, so a command with a pipe goes in a script the plan names. Use only commands and names the source documents or the repository show; if the deployment tooling is not described, write "Not stated" in the command cell rather than guessing.
+Read the approved release record and write a reviewable release plan for the target environment in it. The release request describes the deployment tooling (deploy, rollback and health commands and arguments): use them exactly as written there. A table cell cannot contain the | character, so a command with a pipe goes in a script the plan names. Use only commands and names the source documents or the repository show; if the deployment tooling is not described, write "Not stated" in the command cell rather than guessing.
 
 Sections, in this order:
 ## Status

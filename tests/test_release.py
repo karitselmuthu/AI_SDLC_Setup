@@ -26,12 +26,12 @@ def record(f, env="production"):
 
 
 def plan(h="true", promote=("echo one >> {m}", "echo two >> {m}"), rollback="echo back >> {m}", m="", cfg="true", strategy="canary", window="Window: 2 samples every 1 seconds", health=None):
-    health = health or [["errors", h, "exit 0", "1", "2"]]
+    health = [[r[0], f"`{r[1]}`", *r[2:]] for r in (health or [["errors", h, "exit 0", "1", "2"]])]
     return ("## Status\nDraft.\n## Rollout sequence\n1. deploy\n## Deployment strategy\nStrategy: " + strategy + "\nsafe\n## Feature flags\nNone used\n## Configuration references\n"
-            + TABLE(["Name", "Kind", "Check command"], [["DB_URL", "secret", cfg], ["REGION", "config", "Not checkable here"]]) + "## Migration steps\nNone\n## Promotion commands\n"
-            + TABLE(["Step", "Command", "Purpose"], [[str(i), c.format(m=m), "deploy"] for i, c in enumerate(promote, 1)]) + "## Health checks\n"
+            + TABLE(["Name", "Kind", "Check command"], [["DB_URL", "secret", f"`{cfg}`"], ["REGION", "config", "Not checkable here"]]) + "## Migration steps\nNone\n## Promotion commands\n"
+            + TABLE(["Step", "Command", "Purpose"], [[str(i), f"`{c.format(m=m)}`", "deploy"] for i, c in enumerate(promote, 1)]) + "## Health checks\n"
             + TABLE(["Check", "Command", "Pass condition", "Pause after", "Roll back after"], health) + "## Monitoring window\n" + window + "\n## Rollback\n"
-            + TABLE(["Step", "Command", "Purpose"], [["1", rollback.format(m=m), "restore"]]) + "## Communications\n" + TABLE(["Audience", "Message", "When"], [["ops", "go", "before"]])
+            + TABLE(["Step", "Command", "Purpose"], [["1", f"`{rollback.format(m=m)}`", "restore"]]) + "## Communications\n" + TABLE(["Audience", "Message", "When"], [["ops", "go", "before"]])
             + "## Success criteria\n- healthy\n")
 
 
@@ -412,3 +412,67 @@ def test_later_steps_refuse_to_run_before_the_earlier_ones_are_approved(rl):
         with pytest.raises(SystemExit) as e:
             run(step) if step == "readiness" else run(step, str(rl["repo"]))
         assert "Cannot" in str(e.value)
+
+
+def test_the_plan_step_is_given_the_release_request_again_so_it_can_use_the_tooling_written_there(rl):
+    RL.run_step("request", [str(rl["req"])])
+    RL.run_step("plan", [])
+    assert str(rl["req"].resolve()) in rl["seen"][-1] and json.loads((rl["briefs"] / "sources.json").read_text()) == [str(rl["req"].resolve())]
+
+
+def test_the_approvals_section_may_quote_what_documents_claim_but_nothing_else_may_claim_approval(rl):
+    quoted = record(rl["f"]).replace("None.\n## Not stated", "| Review report | Status: approved by the tech lead | review:4 |\n## Not stated")
+    rl["docs"]["STEP 1"] = quoted
+    RL.run_step("request", [str(rl["req"])])
+    assert len([p for p in rl["seen"] if p.startswith("You are the Release Agent")]) == 1  # no repair pass was needed
+
+
+def test_a_problem_the_repair_pass_did_not_fix_is_printed_before_sign_off(rl, capsys):
+    rl["docs"]["STEP 1"] = record(rl["f"])
+    RL.run_step("request", [str(rl["req"])])
+    rl["docs"]["STEP 3"] = plan(m=rl["marker"], window="Window: Not stated samples every Not stated seconds")
+    RL.run_step("plan", [])
+    out = capsys.readouterr().out
+    assert "repair pass" in out and "STILL WRONG after the repair pass" in out and "Window: N samples" in out
+
+
+def test_promotion_is_refused_when_the_approved_plan_fails_its_own_checks(rl):
+    rl["docs"]["STEP 3"] = plan(m=rl["marker"], window="Window: Not stated samples every Not stated seconds")
+    staged(rl)
+    with pytest.raises(SystemExit) as e:
+        run("promote", str(rl["repo"]))
+    assert "cannot be run" in str(e.value) and not rl["marker"].exists()
+
+
+def test_a_staging_decision_names_the_gates_that_would_block_production(rl):
+    rl["docs"]["STEP 1"] = record(rl["f"], env="staging")
+    siblings(rl["ws"], qa="**Not ready for the release decision.**\n")
+    RL.run_step("request", [str(rl["req"])])
+    run("readiness")
+    t = text(rl, "readiness.md")
+    assert "on the essential gates only" in t and "would block production: QA recommendation ready" in t and "Every required gate is met" not in t
+
+
+def test_commands_the_model_wrapped_in_backticks_run_as_written_never_as_command_substitution(rl):
+    # `echo hi >> m` through a shell would run echo inside a substitution and then try to execute its (empty) output: it must run once, plainly
+    assert RL.shell_cmd("`./deploy.sh staging 1.4.2`") == "./deploy.sh staging 1.4.2" and RL.shell_cmd(" `echo hi` ") == "echo hi"
+    staged(rl)
+    run("promote", str(rl["repo"]))
+    t = text(rl, "deployment-log.md")
+    assert rl["marker"].read_text().split() == ["one", "two"] and "`echo one" in t and "``" not in t
+    assert "contain a backtick" in RL.check_plan(None, plan(promote=("echo `date`",), m="m"), None)
+
+
+def test_the_agent_also_works_as_a_script_not_only_as_an_imported_module(rl, tmp_path):
+    """The command line sets module-level names (cmd, repo); a helper sharing one of those names broke every real run while the imported-module tests passed."""
+    import os
+    import sys
+    RL.run_step("request", [str(rl["req"])])
+    RL.run_step("plan", [])
+    env = dict(os.environ, SDLC_WORKSPACE=str(rl["ws"]))
+    for step, extra in (("provenance", ["--repo", str(rl["repo"])]), ("config", ["--repo", str(rl["repo"])]), ("readiness", [])):
+        r = subprocess.run([sys.executable, str(RL.CODE / "agent.py"), step, *extra], input="y\ny\ny\n", capture_output=True, text=True, env=env, cwd=str(rl["repo"]))
+        assert r.returncode == 0, (step, r.stderr[-400:])
+    assert "**VERIFIED.**" in text(rl, "provenance.md") and "# Release readiness" in text(rl, "readiness.md")  # READY or BLOCKED depends on the real clock here
+    bad = subprocess.run([sys.executable, str(RL.CODE / "agent.py"), "nonsense"], capture_output=True, text=True, env=env)
+    assert bad.returncode != 0 and "Steps:" in (bad.stderr + bad.stdout)
