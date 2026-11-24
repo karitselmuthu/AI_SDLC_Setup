@@ -581,7 +581,25 @@ def test_the_page_follows_the_pipeline_in_the_image_with_stages_and_human_checkp
     pl = v["pipeline"]
     assert [s["agent"] for s in pl] == ["triage", "architect", "coder", "qa", "review", "release", "sre"]  # QA before Review, as drawn
     assert [s["stage"] for s in pl] == ["Plan", "Design", "Build", "Test", "Review", "Deploy", "Operate"]
-    assert [s["built"] for s in pl] == [False] + [True] * 6 and all(s["agent"] in v["tracks"] for s in pl if s["built"])
+    assert all(s["built"] for s in pl) and all(s["agent"] in v["tracks"] for s in pl if s["built"])
     by = {s["agent"]: s for s in pl}
     assert "Product owner" in by["triage"]["checkpoint"] and "Release manager" in by["release"]["checkpoint"] and "On-call engineer" in by["sre"]["checkpoint"]
     assert "On-call engineer" in by["sre"]["signers"] and "Release Manager" in by["release"]["signers"]
+
+
+def test_the_triage_track_takes_issues_and_feeds_in_the_selected_incidents_sre_follow_ups(web, tmp_path):
+    pid = new(web)
+    v = view(web, pid)
+    assert [s["name"] for s in v["tracks"]["triage"]["steps"]] == ["import", "readiness", "prioritize", "scope"] and v["tracks"]["triage"]["next"] == "import"
+    p = app.load(pid)
+    with pytest.raises(ValueError, match="Add the issues first"):
+        app.step_args(p, "triage", "import")
+    assert web("POST", f"/api/projects/{pid}/docs", dict(name="issues.csv", text="id,title\nA-1,x\n", kind="issues"))[0] == 200
+    d = tmp_path / "projects" / pid
+    p = app.load(pid)
+    assert app.step_args(p, "triage", "import") == [str(d / "inputs" / "issues.csv")] and app.step_args(p, "triage", "readiness") == []
+    rev = d / "sre" / "incidents" / "INC-20261124-01" / "briefs"
+    rev.mkdir(parents=True)
+    (rev / "incident-review.md").write_text("## Follow-up actions\n")
+    p["incident"] = "INC-20261124-01"
+    assert app.step_args(p, "triage", "import")[-2:] == ["--sre-review", str(rev / "incident-review.md")]

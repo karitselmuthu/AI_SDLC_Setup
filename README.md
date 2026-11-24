@@ -7,13 +7,14 @@ every output is a draft, and only a named human reviewer can approve it (or send
 
 | Part | Role | What it produces | Steps | Run it |
 |---|---|---|---|---|
+| **Triage agent** | Product-side triager for a backlog | A register of the issues, a fixed-rule readiness score for each, a proposed order and the approved scope handed to design | 4 | `triage/agent.py` |
 | **Architect agent** | Solution architect for a sales opportunity | A versioned, approved solution baseline: requirements, architecture, delivery approach, estimate, proposal | 12 | `architect/agent.py` |
 | **Coding agent** | Developer for one approved ticket | A reviewed code change on a new git branch, tests, pull-request text and a package for the human reviewer | 9 | `coder/agent.py` |
 | **Review agent** | Senior engineering reviewer for that change | Evidence-based findings (each cites a real file and line), a verification pass, a scorecard, and unresolved High findings routed to a person | 9 | `review/agent.py` |
 | **QA agent** | Senior quality analyst for that change | Risk-based test plan, test cases and automated tests, execution evidence, defects, and a quality recommendation | 10 | `qa/agent.py` |
 | **Release agent** | Senior release manager for the approved artifact | A release record, a readiness decision, a versioned plan, provenance, configuration status, a recorded promotion, rollout health, a rollback record and the release history | 9 | `release/agent.py` |
 | **SRE agent** | Senior site reliability engineer for one running service | Service context, health from evidence snapshots, prioritized SLO and alert risks, incident triage, runbook recommendations, gated remediation, updates, recovery status and an incident review | 9 | `sre/agent.py` |
-| **Web page** | One place to enter a project and follow all six | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
+| **Web page** | One place to enter a project and follow all seven | Status of every step, the approval buttons, the reviewer decision, skip plan | - | `web/app.py` |
 
 All agents run the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI (`claude -p`) with a role, a tool allow-list and a spend cap.
 Facts (test results, counts, verdicts, status) are computed by plain code from real evidence, never taken from what a model says.
@@ -21,12 +22,16 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 ## Contents
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
-[Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [SRE agent](#sre-agent-9-steps) · [Web page](#web-page) ·
+[Triage agent](#triage-agent-4-steps) · [Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [SRE agent](#sre-agent-9-steps) · [Web page](#web-page) ·
 [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
 
 ```
+  issues (csv, json, markdown) and SRE follow-ups
+            |
+   Triage agent (4 steps)      ->  readiness, proposed order, approved scope (the product owner approves)
+            |
  project description, RFP, notes
             |
    Architect agent (12 steps)  ->  approved solution baseline (versioned, read-only)
@@ -160,6 +165,24 @@ the QA recommendation lists what was skipped as a limitation. Running the step l
 Every model call is logged to `usage.jsonl` (in `SDLC_WORKSPACE`, git-ignored) with the CLI's real token counts and cost. `python tokens.py [WORKSPACE]`
 prints one row per agent step. Calls use `--disable-slash-commands --strict-mcp-config --setting-sources ""`: without them every call loaded the user's
 skills, plugins and MCP tools (about 65,000 input tokens for one word); with them about 6,000. Agent tool limits and deny rules are still passed explicitly.
+
+## Triage agent (4 steps)
+
+The Plan stage of the pipeline picture (`SDLC_AI.png`): it scores how ready each issue is and proposes an order. **The product owner approves scope**; the agent never creates, edits or closes an issue.
+
+| # | Step | What happens | Output | Model? |
+|---|---|---|---|---|
+| 1 | `import` | Reads issues from csv, json or markdown files, and the follow-up actions of an SRE incident review (`--sre-review`), without changing them. Duplicates, untitled rows and unreadable files are listed | `issue-register.md` (+ `issues.json`, hashed) | no |
+| 2 | `readiness` | Scores every issue out of 100 by fixed rules (description, testable acceptance criteria, title, scope, dependencies, requester, no open questions) and lists what is missing. Vague criteria such as "fast" do not count | `issue-readiness.md` | no |
+| 3 | `prioritize` | Proposes an order with a decision for each issue (Start now, Next, Defer, Needs detail first), reasons and questions for the product owner | `triage-plan.md` | yes |
+| 4 | `scope` | Writes the approved scope: only issues that are still Ready and decided Start now, with their full detail for the Architect | `approved-scope.md` | no |
+
+```bash
+python triage/agent.py import issues.csv [--sre-review sre/incidents/INC-.../briefs/incident-review.md]
+python triage/agent.py readiness ; python triage/agent.py prioritize ; python triage/agent.py scope
+```
+
+What the code enforces: every issue appears exactly once with ranks 1..N; an issue that is not Ready can never be `Start now` or `Next`; no issue is ranked above one it depends on; `issues.json` changed after import stops every later step; an SRE follow-up arrives with no acceptance criteria, so it shows as not ready until someone writes them (this is the picture's feedback loop from operate back to plan). Acceptance: `tests/test_triage.py`.
 
 ## Architect agent (12 steps)
 
@@ -511,6 +534,7 @@ architect/        Architect agent: agent.py (STEPS table, checks, approval loop)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
 review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
+triage/           Triage agent: agent.py (import, readiness rules, prioritize checks, scope)
 sre/              SRE agent: agent.py (nine steps, remediation gates, recovery, review facts), evidence.py (snapshots, burn rates, alert rules)
 release/          Release agent: agent.py (nine steps, readiness gates, provenance, gated promotion, health, rollback), adapters.py (release targets and their checks)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
@@ -525,7 +549,7 @@ architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.json
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py`, `test_release_adapters.py` (Release); `test_sre.py`, `test_sre_evidence.py` (SRE); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py`, `test_release_adapters.py` (Release); `test_sre.py`, `test_sre_evidence.py` (SRE); `test_triage.py` (Triage); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
@@ -607,6 +631,7 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The sample documents are made up.
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
+- The Triage agent reads files, not an issue tracker, and nothing forces the Architect to start from the approved scope yet. Readiness is a checklist of what is written down, not a judgment that the idea is good. It has been run once with the real model on made-up issues (about $0.08).
 - Skipping a step is available on the web page only, not from the command line. Release and SRE steps cannot be skipped.
 - The SRE agent reads snapshot files, not live monitoring: it is only as trustworthy as whoever collects them, and it cannot tell that evidence came from a different environment than the action. It has been run once with the real model on made-up incident data (5 model steps, about $1.14), not on a real service. Traces are not read yet. The page works on one selected incident at a time, and a closed incident is not reopened (open a new one). The incident split has been run with the real model on made-up data (one incident, a service refresh, a pin, a second incident; triage cost about $0.55), not on a real service. Documents in the same folder as an input are readable by the model.
 - The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. Unsupported targets are reported, not blocked: there is no way yet to record a specialist's sign-off, so the Release Manager reads the warning and decides. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.

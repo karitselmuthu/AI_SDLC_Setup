@@ -35,16 +35,17 @@ from coder import agent as coder_agent, handoff  # noqa: E402
 from qa import agent as qa_agent  # noqa: E402
 from release import agent as release_agent  # noqa: E402
 from sre import agent as sre_agent  # noqa: E402
+from triage import agent as triage_agent  # noqa: E402
 from review import agent as review_agent  # noqa: E402
 import skipplan  # noqa: E402
 from coder import adapters  # noqa: E402
 
 PROJECTS = pathlib.Path(os.environ.get("SDLC_PROJECTS") or ROOT / "projects")
-MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent, "release": release_agent, "sre": sre_agent}
+MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_agent, "qa": qa_agent, "release": release_agent, "sre": sre_agent, "triage": triage_agent}
 NEVER_AUTO = {("release", "promote"), ("sre", "remediate")}  # "Run all" never starts a production change; a person starts it, then authorizes the exact commands
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".jsonl", ".log", ".yaml", ".yml", ".html"}
-DOC_KINDS = ("meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
+DOC_KINDS = ("issues", "meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
 MAX_UPLOAD = 5_000_000
 MAX_BODY = 12_000_000
 TOKEN = secrets.token_urlsafe(24)
@@ -67,6 +68,7 @@ LABELS = {
     "release": {"request": "Receive the release request", "readiness": "Check release readiness", "plan": "Prepare the release plan", "provenance": "Verify artifact and provenance",
                 "config": "Validate target configuration", "promote": "Execute authorized promotion", "monitor": "Monitor rollout health", "rollback": "Roll back or recover",
                 "close": "Close the release"},
+    "triage": {"import": "Import issues", "readiness": "Score readiness", "prioritize": "Prioritize and propose scope", "scope": "Approve scope"},
     "sre": {"context": "Service: establish context", "health": "Service: observe health", "risks": "Service: detect risks", "triage": "Incident: triage",
             "recommend": "Incident: recommend actions", "remediate": "Incident: authorized remediation", "updates": "Incident: updates", "recovery": "Incident: recovery and closure",
             "review": "Incident: learn and improve"}}
@@ -76,6 +78,7 @@ READABLE = {"architect": {v[1] for v in architect_agent.STEPS.values()},
             "review": {v[1] for v in review_agent.STEPS.values()} | {"change.diff", "review-areas.md"},
             "qa": {v[1] for v in qa_agent.STEPS.values()},
             "release": {v[1] for v in release_agent.STEPS.values()},
+            "triage": {v[1] for v in triage_agent.STEPS.values()},
             "sre": {v[1] for v in sre_agent.STEPS.values()} | {"review-facts.md"}}
 
 
@@ -334,6 +337,14 @@ def step_args(p, agent, step):
                 raise ValueError("Add the client meeting notes first (use 'Add meeting notes'). If there was no meeting, add a note that says so.")
             return notes
         return src + notes if step == "handoff" else []
+    if agent == "triage":
+        if step == "import":
+            files = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "issues"]
+            review = pdir(p["id"]) / "sre" / "incidents" / (p.get("incident") or "-") / "briefs" / "incident-review.md"
+            if not files and not review.exists():
+                raise ValueError("Add the issues first (under Documents, add a csv, json or markdown file as 'Issues').")
+            return files + (["--sre-review", str(review)] if review.exists() else [])
+        return []
     if agent == "sre":
         args = sre_args(p, d, step)
         if step not in sre_agent.SERVICE_STEPS:
