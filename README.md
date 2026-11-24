@@ -451,7 +451,7 @@ Acceptance: `tests/test_release_adapters.py` has a test for each target row, uns
 
 ## SRE agent (9 steps)
 
-A senior site reliability engineer for one running service. It watches evidence, detects SLO risk, helps the on-call engineer triage, recommends the least risky runbook action and, **only when a policy, an allowlist and a person all allow it**, runs that action and checks the result with an independent signal. **The on-call engineer owns the incident**; the agent never closes one. Five steps use a model for narrative; four are plain code.
+A senior site reliability engineer for one running service. Steps 1 to 3 are the **service record** (`sre/service/`), refreshed any time. Steps 4 to 9 belong to **one incident** (`sre/incidents/INC-<date>-<n>/`): opening an incident pins the approved service record into its folder, so refreshing the service never makes an open incident stale. It watches evidence, detects SLO risk, helps the on-call engineer triage, recommends the least risky runbook action and, **only when a policy, an allowlist and a person all allow it**, runs that action and checks the result with an independent signal. **The on-call engineer owns the incident**; the agent never closes one. Five steps use a model for narrative; four are plain code.
 
 | # | Step | What happens | Output | Model? |
 |---|---|---|---|---|
@@ -467,7 +467,9 @@ A senior site reliability engineer for one running service. It watches evidence,
 
 ```bash
 python sre/agent.py context CATALOG.md [RUNBOOKS.md ...]
-python sre/agent.py health --metrics m.csv --events e.jsonl --logs l.txt      # then risks, triage NOTE.md, recommend
+python sre/agent.py health --metrics m.csv --events e.jsonl --logs l.txt      # then risks
+python sre/agent.py incident open "Checkout payments failing"                 # also: incident list | incident pin [--incident ID]
+python sre/agent.py triage NOTE.md ; python sre/agent.py recommend            # --incident ID when more than one is open
 python sre/agent.py remediate --policy policy.json --allowlist allow.json --action "Restart worker pool" --repo CWD
 python sre/agent.py updates ; python sre/agent.py recovery --metrics after.csv ; python sre/agent.py review
 ```
@@ -480,6 +482,7 @@ What the code enforces, not the prompt:
 - **The command comes from the allowlist, never from the model.** Output and commands are secret-masked; the authorization is pinned in the approvals ledger with the policy and allowlist hashes. A failed verification offers a rollback only with a second yes.
 - **Observed facts and hypotheses are separate.** A fact that says "caused by" or "due to" is sent back; a cause must be a hypothesis with a confidence and what would confirm or refute it.
 - **No unproven recovery.** An update that says recovered, resolved or fixed is refused unless a verified action result supports it. Stale data lowers every confidence to Low; a missing metric is a gap, never "healthy".
+- **Incidents are isolated.** Re-running health or risks changes only the service record. An incident keeps the record it was opened with until a person runs `incident pin`, which shows what changed and makes the incident's own steps stale. A second incident never touches the first. A closed incident only allows its review. Recurrence and the SLO trend in the review are computed from the other incidents in the workspace.
 - **The person closes.** Recovery produces a recommendation; the closure decision (closed or kept open) is a separate prompt only a person answers. Run all never starts a remediation.
 
 Acceptance: `tests/test_sre.py` and `tests/test_sre_evidence.py` run every step on synthetic snapshots, including each refusal above.
@@ -605,6 +608,6 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
 - Skipping a step is available on the web page only, not from the command line. Release and SRE steps cannot be skipped.
-- The SRE agent reads snapshot files, not live monitoring: it is only as trustworthy as whoever collects them, and it cannot tell that evidence came from a different environment than the action. It has been run once with the real model on made-up incident data (5 model steps, about $1.14), not on a real service. Traces are not read yet. Steps 1 to 3 are refreshed by re-running them, which makes the later steps stale; a separate service record with a folder per incident is not built yet. Documents in the same folder as an input are readable by the model.
+- The SRE agent reads snapshot files, not live monitoring: it is only as trustworthy as whoever collects them, and it cannot tell that evidence came from a different environment than the action. It has been run once with the real model on made-up incident data (5 model steps, about $1.14), not on a real service. Traces are not read yet. The page works on one selected incident at a time, and a closed incident is not reopened (open a new one). The incident split has been run with the real model on made-up data (one incident, a service refresh, a pin, a second incident; triage cost about $0.55), not on a real service. Documents in the same folder as an input are readable by the model.
 - The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. Unsupported targets are reported, not blocked: there is no way yet to record a specialist's sign-off, so the Release Manager reads the warning and decides. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.
 - The Review agent has been checked with canned model replies and one real run on a small change. Its findings are drafts for a person: a model can still miss a defect, so it supports a human review and does not replace one.
