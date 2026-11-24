@@ -10,13 +10,16 @@ Each step writes to sre/briefs/ and loops until a named human approves it.
   python sre/agent.py updates                                           7. status, impact and handoff text for the on-call engineer to send (model)
   python sre/agent.py recovery [--metrics M.csv ...]                    8. recovery criteria checked against the service's own indicators (code); a person decides closure
   python sre/agent.py review                                            9. incident review draft: facts by code, analysis by the model
-Evidence is read from snapshot files (see sre/evidence.py). Production changes need a policy that allows them, an allowlisted action, and a person's yes.
+Steps 1 to 3 are the refreshable service record (sre/service/). Steps 4 to 9 belong to one incident (sre/incidents/INC-<date>-<n>/), opened with
+  python sre/agent.py incident open "TITLE"   |   incident list   |   incident pin [--incident ID]   (bring a refreshed service record into an open incident, on purpose)
+and take --incident ID when more than one is open. Evidence is read from snapshot files (see sre/evidence.py). Production changes need a policy that allows them, an allowlisted action, and a person's yes.
 """
 import hashlib
 import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -54,6 +57,8 @@ STEPS = {
     "recovery": ("-", "recovery-status.md", [ONCALL], ["incident-updates.md"]),
     "review": ("review.md", "incident-review.md", [ONCALL, LEAD], ["recovery-status.md"]),
 }
+SERVICE_STEPS = ("context", "health", "risks")  # the refreshable service record; every other step belongs to one incident
+SERVICE_FILES = [STEPS[s][1] for s in SERVICE_STEPS]
 SERVICE_FIELDS = ["Name", "Tier", "Owner", "On-call rotation", "Escalation path"]
 VERBATIM = ["Owner", "On-call rotation", "Escalation path"]
 STALE_DAYS = 180
@@ -81,6 +86,109 @@ def refs(text):
 
 def sentences(text):
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+
+
+# ---- the service record and incidents: where each step's files live ------------------------------------------------------------
+
+def service_briefs():
+    return HERE / "service" / "briefs"
+
+
+def incident_ids():
+    root = HERE / "incidents"
+    return sorted(d.name for d in root.glob("INC-*") if (d / "incident.json").exists()) if root.exists() else []
+
+
+def incident_info(inc):
+    return json.loads((HERE / "incidents" / inc / "incident.json").read_text())
+
+
+def write_incident(inc, **kw):
+    (HERE / "incidents" / inc / "incident.json").write_text(json.dumps({**incident_info(inc), **kw}, indent=1))
+
+
+def resolve_incident(arg=None, closed_ok=False):
+    ids = incident_ids()
+    if arg:
+        if arg not in ids:
+            sys.exit(f"There is no incident {arg}. Incidents: {', '.join(ids) or 'none'}.")
+        return arg
+    live = [i for i in ids if incident_info(i)["status"] == "open"]
+    if len(live) == 1:
+        return live[0]
+    if not live and closed_ok and ids:
+        return ids[-1]  # the review of the latest incident, once it is closed
+    sys.exit("No incident is open. Open one first: python sre/agent.py incident open \"TITLE\"" if not live else f"Several incidents are open ({', '.join(live)}). Say which with --incident ID.")
+
+
+def briefs_for(name, incident=None):
+    """Steps 1 to 3 are the service record; steps 4 to 9 belong to one incident. A closed incident only allows its review."""
+    if name in SERVICE_STEPS:
+        return service_briefs()
+    inc = resolve_incident(incident, closed_ok=name == "review")
+    if incident_info(inc)["status"] == "closed" and name != "review":
+        sys.exit(f"{inc} is closed. Only its review can still be written; open a new incident for anything new.")
+    return HERE / "incidents" / inc / "briefs"
+
+
+def service_problems():
+    return baseline.problems(service_briefs(), {s: STEPS[s] for s in SERVICE_STEPS})
+
+
+def pin(sb, briefs):
+    """Copy the approved service record and its evidence into an incident, with the approvals that cover exactly these files. The incident then no longer depends on
+    the live service record: refreshing the service never changes an open incident. A later pin appends fresh approvals, so the incident's own steps go stale."""
+    briefs.mkdir(parents=True, exist_ok=True)
+    shas = {}
+    for f in SERVICE_FILES:
+        shutil.copy2(sb / f, briefs / f)
+        shas[f] = baseline.sha256(briefs / f)
+    svc, new = inputs(sb), {}
+    (briefs / "evidence").mkdir(exist_ok=True)
+    for kind, paths in (svc.get("evidence") or {}).items():
+        new[kind] = []
+        for p_ in paths:
+            if pathlib.Path(p_).is_file():
+                dst = briefs / "evidence" / f"{kind}-{pathlib.Path(p_).name}"
+                shutil.copy2(p_, dst)
+                new[kind].append(str(dst))
+    save_inputs(briefs, evidence=new, max_age=svc.get("max_age", 15.0))
+    log = sb / "approvals.log"
+    keep = [ln for ln in (log.read_text().splitlines() if log.exists() else []) if ln.strip() and json.loads(ln)["file"] in shas and json.loads(ln)["sha256"] == shas[json.loads(ln)["file"]]]
+    with (briefs / "approvals.log").open("a") as f:
+        f.write("".join(ln + "\n" for ln in keep))
+    return shas
+
+
+def open_incident(title):
+    if not (title or "").strip():
+        sys.exit("incident open: give the incident a short title.")
+    if bad := service_problems():
+        sys.exit("Cannot open an incident: the service record (context, health, risks) must be approved first:\n  " + "\n  ".join(bad))
+    day = now().strftime("%Y%m%d")
+    inc = f"INC-{day}-{1 + len([i for i in incident_ids() if i.startswith(f'INC-{day}')]):02d}"
+    d = HERE / "incidents" / inc
+    shas = pin(service_briefs(), d / "briefs")
+    (d / "incident.json").write_text(json.dumps(dict(id=inc, title=title.strip(), opened_at=now().isoformat(timespec="seconds"), status="open", pins=[dict(at=now().isoformat(timespec="seconds"), sha256=shas)]), indent=1))
+    print(f"opened {inc}: {title.strip()}\npinned the approved service record. Refreshing the service later does not change this incident; use `incident pin` to bring it in on purpose.")
+    return inc
+
+
+def repin_incident(incident=None):
+    inc = resolve_incident(incident)
+    if incident_info(inc)["status"] == "closed":
+        sys.exit(f"{inc} is closed; it keeps the service record it was pinned to.")
+    if bad := service_problems():
+        sys.exit("Cannot pin: the service record is not approved:\n  " + "\n  ".join(bad))
+    briefs, sb = HERE / "incidents" / inc / "briefs", service_briefs()
+    changed = [f for f in SERVICE_FILES if baseline.sha256(sb / f) != baseline.sha256(briefs / f)]
+    if not changed:
+        print(f"{inc} already has the current service record; nothing changed.")
+        return []
+    shas = pin(sb, briefs)
+    write_incident(inc, pins=incident_info(inc)["pins"] + [dict(at=now().isoformat(timespec="seconds"), sha256=shas, changed=changed)])
+    print(f"{inc} now uses the new service record. Changed: {', '.join(changed)}. Steps of this incident that were approved on the old record are stale: run them again.")
+    return changed
 
 
 # ---- the service context, as the code reads it -------------------------------------------------------------------------------
@@ -267,9 +375,9 @@ def doc_key(name):
     return "docs_context" if name == "context" else "docs_incident"
 
 
-def run_step(name, files):
+def run_step(name, files, incident=None):
     template, out_name, reviewers, prior = STEPS[name]
-    briefs = HERE / "briefs"
+    briefs = briefs_for(name, incident)
     gate(name, briefs)
     if name in ("context", "triage") and not files:
         sys.exit("context: pass the service catalog entry first, then runbooks, SLO and alert-rule files." if name == "context" else "triage: pass the incident note (what the on-call engineer sees).")
@@ -342,7 +450,7 @@ def abspaths(items):
 
 
 def run_health(metrics, events=None, logs=None, max_age=15.0):
-    briefs = HERE / "briefs"
+    briefs = service_briefs()
     gate("health", briefs)
     if not metrics:
         sys.exit("health: pass --metrics FILE (time,metric,value). Add --events and --logs when you have them.")
@@ -378,7 +486,7 @@ def run_health(metrics, events=None, logs=None, max_age=15.0):
 
 
 def run_risks():
-    briefs = HERE / "briefs"
+    briefs = service_briefs()
     gate("risks", briefs)
     ev = evidence(briefs)
     max_age = inputs(briefs).get("max_age", 15.0)
@@ -434,8 +542,8 @@ def refusal(policy, entry, name):
     return ""
 
 
-def run_remediate(actions, policy_path=None, allowlist_path=None, cwd=None):
-    briefs, cwd = HERE / "briefs", pathlib.Path(cwd or ".").resolve()
+def run_remediate(actions, policy_path=None, allowlist_path=None, cwd=None, incident=None):
+    briefs, cwd = briefs_for("remediate", incident), pathlib.Path(cwd or ".").resolve()
     gate("remediate", briefs)
     recs = {r[0].strip(): norm(r[1]) for r in rows(read(briefs, "recommendations.md"), "Recommendations") if len(r) >= 2}
     wanted = [recs.get(a, norm(a)) for a in actions or []]
@@ -517,8 +625,8 @@ def recovery_rows(briefs, ev):
     return out
 
 
-def run_recovery(metrics=None, events=None, logs=None, max_age=None):
-    briefs = HERE / "briefs"
+def run_recovery(metrics=None, events=None, logs=None, max_age=None, incident=None):
+    briefs = briefs_for("recovery", incident)
     gate("recovery", briefs)
     if metrics:
         paths = dict(metrics=abspaths(metrics), events=abspaths(events), logs=abspaths(logs))
@@ -553,6 +661,8 @@ def run_recovery(metrics=None, events=None, logs=None, max_age=None):
     out.write_text(body)
     decision = approve(f"{ONCALL.split(' (')[0]} decides to CLOSE this incident (recommendation: {status})")
     (briefs / "closure-decision.json").write_text(json.dumps(dict(decision="closed" if decision else "kept open", by=ONCALL.split(" (")[0], recovery_status=status, at=now().isoformat(timespec="seconds")), indent=1))
+    if decision:
+        write_incident(briefs.parent.name, status="closed", closed_at=now().isoformat(timespec="seconds"))
     if not C.signoff(briefs, "recovery", out, STEPS["recovery"][2]):
         print("Not approved. Fix the cause and run this step again.")
     print(f"closure decision recorded: {'closed' if decision else 'kept open'}\nwrote:", out)
@@ -580,7 +690,7 @@ def review_facts(briefs):
         if p.exists():
             d = json.loads(p.read_text())
             timeline.append((E.ts(d["at"]), f"{label}: {d.get('action', d.get('decision', ''))} by {d.get('approver_role', d.get('by', '')).split(' (')[0]}"))
-    burn = []
+    burn, burn_now = [], {}
     for s in ss:
         if s["kind"] in ("error_rate", "success_ratio"):
             pts = ev["series"].get(s["metric"], [])
@@ -588,20 +698,23 @@ def review_facts(briefs):
                 hours = (pts[-1][0] - pts[0][0]).total_seconds() / 3600
                 er = E.as_error_ratio(s["kind"], [v for _, v in pts], E.is_pct(pts))
                 b = E.burn_rate(er, s["objective"])
+                burn_now[s["id"]] = b
                 burn.append(f"{s['id']}: mean burn {b:.1f}x over {hours:.1f}h of evidence, about {er * hours / (1 - s['objective'] / 100) / s['window_h']:.0%} of the {s['window_h']:g}h error budget")
-    hist = HERE / "incident-history.jsonl"
-    past = [json.loads(x) for x in hist.read_text().splitlines()] if hist.exists() else []
-    key = f"{service_name(briefs)}|{min((e['t'] for e in ev['events']), default=E.newest(ev)):%Y-%m-%dT%H:%M}"
+    inc = briefs.parent.name
+    others = [dict(incident_info(i), id=i) for i in incident_ids() if i != inc]
     names = sorted({e["name"] for e in alerts})
-    repeat = [p for p in past if p["key"] != key and set(p["alerts"]) & set(names)]
-    if ev["events"] or names:
-        hist.parent.mkdir(parents=True, exist_ok=True)
-        if not any(p["key"] == key for p in past):
-            with hist.open("a") as f:
-                f.write(json.dumps(dict(key=key, alerts=names, slos=len(ss))) + "\n")
+    repeat = [o for o in others if set(o.get("alerts", [])) & set(names)]
+    trend = []
+    for sid, now_b in burn_now.items():
+        before = [f"{o['id']} {o['burn'][sid]:.1f}x" for o in others if sid in o.get("burn", {})]
+        if before:
+            trend.append(f"{sid}: mean burn {', '.join(before)}, this incident {now_b:.1f}x")
+    if (briefs.parent / "incident.json").exists():
+        write_incident(inc, alerts=names, burn={k: round(v, 2) for k, v in burn_now.items()})  # kept so later incidents can see this one
     return ("## Facts computed by the system\n### Timeline (UTC)\n" + "\n".join(f"- {t:%Y-%m-%d %H:%M:%S} {x}" for t, x in sorted(timeline)) + "\n\n### Detection\n- " + delay
             + "\n\n### Error budget\n" + ("\n".join(f"- {b}" for b in burn) or "- no ratio SLO could be evaluated")
-            + f"\n\n### Recurrence\n- {len(repeat)} earlier incident(s) in this workspace fired the same alert(s) ({', '.join(names) or 'no alert events'})." + "\n")
+            + f"\n\n### Recurrence\n- {len(repeat)} earlier incident(s) in this workspace fired the same alert(s) ({', '.join(names) or 'no alert events'})" + (f": {', '.join(o['id'] for o in repeat)}." if repeat else ".")
+            + "\n\n### SLO trend\n" + ("\n".join(f"- {t}" for t in trend) or "- no earlier incident has a burn rate to compare with.") + "\n")
 
 
 if __name__ == "__main__":
@@ -615,10 +728,21 @@ if __name__ == "__main__":
             del args[i:i + 2]
         return vals if many else (vals[-1] if vals else None)
     metrics, events, logs, acts = flag("--metrics", True), flag("--events", True), flag("--logs", True), flag("--action", True)
-    max_age, policy, allow, cwd = flag("--max-age"), flag("--policy"), flag("--allowlist"), flag("--repo")
+    max_age, policy, allow, cwd, inc = flag("--max-age"), flag("--policy"), flag("--allowlist"), flag("--repo"), flag("--incident")
     cmd, *files = args or [""]
+    if cmd == "incident":
+        sub_cmd, *rest = files or [""]
+        if sub_cmd == "open":
+            open_incident(" ".join(rest))
+        elif sub_cmd == "list":
+            print("\n".join(f"{i}  {incident_info(i)['status']:<7} {incident_info(i)['title']}" for i in incident_ids()) or "no incidents")
+        elif sub_cmd == "pin":
+            repin_incident(inc)
+        else:
+            sys.exit("incident: open TITLE | list | pin [--incident ID]")
+        sys.exit(0)
     if cmd not in STEPS:
-        sys.exit(__doc__ + "Steps: " + ", ".join(STEPS))
-    runs = dict(health=lambda: run_health(metrics, events, logs, float(max_age or 15)), risks=run_risks, remediate=lambda: run_remediate(acts, policy, allow, cwd),
-                recovery=lambda: run_recovery(metrics, events, logs, float(max_age) if max_age else None))
-    runs[cmd]() if cmd in runs else run_step(cmd, files)
+        sys.exit(__doc__ + "Steps: " + ", ".join(STEPS) + "\nIncidents: incident open TITLE | list | pin")
+    runs = dict(health=lambda: run_health(metrics, events, logs, float(max_age or 15)), risks=run_risks, remediate=lambda: run_remediate(acts, policy, allow, cwd, inc),
+                recovery=lambda: run_recovery(metrics, events, logs, float(max_age) if max_age else None, inc))
+    runs[cmd]() if cmd in runs else run_step(cmd, files, inc)
