@@ -25,3 +25,5 @@ Table `| Step | Command | Purpose |` that restores the previous version. Pre-app
 Table `| Audience | Message | When |` for operators and stakeholders.
 ## Success criteria
 Bullet list a person can check.
+## Target checks
+The code detects which deployment targets this release involves and lists them, with their checks, below the request. Add a table `| Target | Check | How it is covered |` with one row for every target and check listed (copy the names exactly). "How it is covered" must be one of: `Promotion command N`, `Rollback step N`, `Health check <name>`, `Configuration reference <name>` (an item that exists in this plan), `Manual: <what> by <role>`, `Not covered: <reason>` or `Not applicable: <reason>`. Never claim a check is handled by "the platform" or "the pipeline" without a plan item that does it. A target the code lists as unsupported gets one row `| <target> | All checks | Not covered: needs a specialist |`.

@@ -426,7 +426,22 @@ What the code enforces, not the prompt:
 - **Plans are checked**: a destructive or pushing command (`rm -rf /`, `git push`, `curl | sh`), a `|` that would shift the table columns, an unknown strategy or an invalid health condition sends the plan back.
 - **A pause keeps sampling; only a rollback threshold stops it.** A failed promotion is not rolled back automatically: a person decides (`rollback --manual`).
 
-Acceptance: `tests/test_release.py` runs every step with tiny shell commands that write marker files, including the refusals above.
+**Technology and deployment coverage** (`release/adapters.py`, plain code, no model). The agent has no native integration with any platform; it runs only the commands in the approved plan. What the adapters do is find which kinds of deployment a release involves from repository files, manifest contents, the artifact (for example an image reference or an `.aab`) and the commands in the request and plan, and list the checks that matter for each. The plan must then say, for every check, how it is covered: a plan item that exists (`Promotion command 2`, `Health check <name>`, `Configuration reference <name>`, `Rollback step 1`), `Manual: <what> by <role>`, or an honest `Not covered: <reason>`. A claim that "the platform handles it" is sent back.
+
+| Release target | Detected from | Release checks |
+|---|---|---|
+| Containers and orchestration | Dockerfile, compose, Helm, Kubernetes manifests (by contents), image references | Image identity, registry provenance, configuration, readiness probes, rollout status, rollback behavior |
+| Cloud application services | `appspec.yml`, `app.yaml`, `buildspec.yml`, `aws`/`az`/`gcloud` commands | Target account or project, region, identity permissions, environment configuration, health status, promotion path |
+| Serverless | `serverless.yml`, `samconfig.toml`, `host.json`, SAM templates (by contents) | Package version, triggers, permissions, concurrency settings, compatibility, rollback limitations |
+| Virtual machines and data centers | Packer, Ansible, Chef, Puppet, `.ova` `.vmdk` `.rpm` `.deb` | Image or package identity, host readiness, configuration drift, deployment order, recovery process |
+| Web and mobile applications | Android and iOS projects, Fastlane, Netlify, Vercel, Firebase, `.apk` `.aab` `.ipa` | Environment, release channel, signing or package identity, staged rollout, user-impact checks |
+| Data and database changes | `.sql`, migrations, Alembic, Flyway, Liquibase, Prisma, dbt, DAGs | Backward compatibility, migration order, lock or downtime risk, recovery strategy, data validation gates |
+| Infrastructure as code | Terraform, CloudFormation (by contents), CDK, Pulumi | Plan or diff review, policy checks, target scope, dependency order, change impact |
+| Cross-cutting delivery systems | Always; names the CI/CD files when there are any | Approval enforcement, immutable artifacts, credentials scope, audit record, workflow integrity |
+
+A technology with no adapter (mainframe JCL and COBOL, Windows installers and SCCM, Cloud Foundry, Nomad, Salesforce, SAP transports, Heroku) is listed as **unsupported** and the plan must say it needs a specialist; nothing is assumed about how it deploys. The readiness report, the authorization prompt and the release history all show the targets, which checks are addressed or not covered, and the unsupported ones. Detection is by file names, a few file contents and command words, so it can miss a target that leaves no such trace; it never invents one.
+
+Acceptance: `tests/test_release_adapters.py` has a test for each target row, unsupported targets and the plan checks. `tests/test_release.py` runs every step with tiny shell commands that write marker files, including the refusals above.
 
 ## Web page
 
@@ -452,7 +467,7 @@ architect/        Architect agent: agent.py (STEPS table, checks, approval loop)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
 review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
-release/          Release agent: agent.py (nine steps, readiness gates, provenance, gated promotion, health, rollback)
+release/          Release agent: agent.py (nine steps, readiness gates, provenance, gated promotion, health, rollback), adapters.py (release targets and their checks)
 web/              Web page: app.py (standard-library server) and index.html (the single page)
 core.py           Shared runner: role, tool limits, session, budget, approval prompt, injection scan, token log
 skipplan.py       Rules that suggest which steps a project may not need
@@ -465,7 +480,7 @@ architect/briefs, coder/briefs, review/briefs, qa/briefs, */baseline, usage.json
 
 Tests, by area: `test_architect.py`, `test_baseline.py`, `test_acceptance.py` (architect); `test_coder.py`, `test_stack.py`, `test_implement.py`,
 `test_tests_step.py`, `test_diffscan.py`, `test_handoff.py`, `test_adapters.py`, `test_coder_acceptance.py`, `test_human_handoff.py` (coding agent);
-`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py` (Release); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
+`test_review.py`, `test_review_acceptance.py` (Review, 15 acceptance cases); `test_qa.py`, `test_qa_acceptance.py` (QA); `test_release.py`, `test_release_adapters.py` (Release); `test_web.py`, `test_skipplan.py`, `test_tokens.py` (page, skip plan, token log).
 
 ## Testing
 
@@ -548,5 +563,5 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
 - Skipping a step is available on the web page only, not from the command line. Release steps cannot be skipped.
-- The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.
+- The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. Unsupported targets are reported, not blocked: there is no way yet to record a specialist's sign-off, so the Release Manager reads the warning and decides. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.
 - The Review agent has been checked with canned model replies and one real run on a small change. Its findings are drafts for a person: a model can still miss a defect, so it supports a human review and does not replace one.

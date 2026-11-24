@@ -293,7 +293,7 @@ def step_args(p, agent, step):
             if not p["repo"]:
                 raise ValueError("Set the repository folder first (under 'Coder setup'): the release commands run there.")
             return ["--repo", p["repo"]]
-        return []
+        return ["--repo", p["repo"]] if p["repo"] and step in ("readiness", "plan") else []  # the repository is evidence for which release targets apply
     if agent in ("qa", "review") and step in ("recommend", "report"):
         return []
     if not p["repo"]:

@@ -25,14 +25,17 @@ def record(f, env="production"):
     return "## Status\nDraft.\n## Release\n" + TABLE(["Field", "Value", "Source"], [[k, vals[k], "request"] for k in RL.FIELDS]) + "## Approvals stated in the request\nNone.\n## Not stated\nNothing.\n"
 
 
-def plan(h="true", promote=("echo one >> {m}", "echo two >> {m}"), rollback="echo back >> {m}", m="", cfg="true", strategy="canary", window="Window: 2 samples every 1 seconds", health=None):
+CROSS = [["Cross-cutting delivery systems", c, "Not covered: the request does not describe the delivery system"] for c in RL.A.CHECKS["Cross-cutting delivery systems"]]
+
+
+def plan(h="true", promote=("echo one >> {m}", "echo two >> {m}"), rollback="echo back >> {m}", m="", cfg="true", strategy="canary", window="Window: 2 samples every 1 seconds", health=None, target_rows=CROSS):
     health = [[r[0], f"`{r[1]}`", *r[2:]] for r in (health or [["errors", h, "exit 0", "1", "2"]])]
     return ("## Status\nDraft.\n## Rollout sequence\n1. deploy\n## Deployment strategy\nStrategy: " + strategy + "\nsafe\n## Feature flags\nNone used\n## Configuration references\n"
             + TABLE(["Name", "Kind", "Check command"], [["DB_URL", "secret", f"`{cfg}`"], ["REGION", "config", "Not checkable here"]]) + "## Migration steps\nNone\n## Promotion commands\n"
             + TABLE(["Step", "Command", "Purpose"], [[str(i), f"`{c.format(m=m)}`", "deploy"] for i, c in enumerate(promote, 1)]) + "## Health checks\n"
             + TABLE(["Check", "Command", "Pass condition", "Pause after", "Roll back after"], health) + "## Monitoring window\n" + window + "\n## Rollback\n"
             + TABLE(["Step", "Command", "Purpose"], [["1", f"`{rollback.format(m=m)}`", "restore"]]) + "## Communications\n" + TABLE(["Audience", "Message", "When"], [["ops", "go", "before"]])
-            + "## Success criteria\n- healthy\n")
+            + "## Success criteria\n- healthy\n## Target checks\n" + TABLE(["Target", "Check", "How it is covered"], target_rows))
 
 
 @pytest.fixture
