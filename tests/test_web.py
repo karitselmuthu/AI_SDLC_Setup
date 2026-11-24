@@ -574,3 +574,14 @@ def test_sre_incident_steps_follow_the_selected_incident_and_the_service_steps_d
     assert v["incidents"][0]["title"] == "Checkout errors" and v["project"]["incident"] == "INC-20261124-01" and st["triage"]["produced"] and st["triage"]["text"] != "Open an incident first"
     assert web("GET", f"/api/projects/{pid}/doc?agent=sre&file=incident-triage.md")[1]["text"].startswith("## Status")
     assert web("GET", f"/api/projects/{pid}/doc?agent=sre&file=service-context.md")[1]["text"] == ""  # service files are read from the service folder
+
+
+def test_the_page_follows_the_pipeline_in_the_image_with_stages_and_human_checkpoints(web):
+    v = view(web, new(web))
+    pl = v["pipeline"]
+    assert [s["agent"] for s in pl] == ["triage", "architect", "coder", "qa", "review", "release", "sre"]  # QA before Review, as drawn
+    assert [s["stage"] for s in pl] == ["Plan", "Design", "Build", "Test", "Review", "Deploy", "Operate"]
+    assert [s["built"] for s in pl] == [False] + [True] * 6 and all(s["agent"] in v["tracks"] for s in pl if s["built"])
+    by = {s["agent"]: s for s in pl}
+    assert "Product owner" in by["triage"]["checkpoint"] and "Release manager" in by["release"]["checkpoint"] and "On-call engineer" in by["sre"]["checkpoint"]
+    assert "On-call engineer" in by["sre"]["signers"] and "Release Manager" in by["release"]["signers"]

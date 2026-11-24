@@ -183,6 +183,29 @@ def classify(problems):
     return "stale", "Out of date: an earlier step was approved again"
 
 
+# The pipeline as drawn in SDLC_AI.png: agent, SDLC stage, what the agent does and the human checkpoint. QA comes before Review; Release needs both.
+PIPELINE = [("triage", "Triage Agent", "Plan", "Scores issue readiness", "Product owner approves scope"),
+            ("architect", "Architect Agent", "Design", "Drafts the spec", "Tech lead signs off on design"),
+            ("coder", "Coding Agent", "Build", "Writes code, opens the PR", "Auto retry: loops until all checks pass (bounded here, then a person decides)"),
+            ("qa", "QA Agent", "Test", "Writes and runs tests", "Auto retry: failing checks are rerun to expose flaky ones"),
+            ("review", "Review Agent", "Review", "First-pass PR review", "Engineer approves the PR"),
+            ("release", "Release Agent", "Deploy", "Rolls out behind flags", "Release manager approves the production release"),
+            ("sre", "SRE Agent", "Operate", "Watches SLOs, triages incidents", "On-call engineer owns incidents")]
+
+
+def pipeline():
+    def roles(agent):
+        mod = MODS.get(agent)
+        names = []
+        for v in (mod.STEPS.values() if mod else []):
+            for r in (v[2] if isinstance(v[2], list) else [v[2]]):
+                n = r.split(" (")[0]
+                if n not in names:
+                    names.append(n)
+        return names
+    return [dict(agent=a, name=n, stage=st, does=d, checkpoint=c, built=a in MODS, signers=roles(a)) for a, n, st, d, c in PIPELINE]
+
+
 def briefs_of(pid, agent, step=None):
     """Where a step's files are. The SRE service record is shared; each SRE incident has its own folder, and the selected one is used. None: no incident yet."""
     d = pdir(pid) / agent
@@ -527,7 +550,7 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid))
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline())
 
 
 def incident_action(pid, data):
