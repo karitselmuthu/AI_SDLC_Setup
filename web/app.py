@@ -242,6 +242,54 @@ def usage(pid):
     return dict(agents=by, total=total)
 
 
+def routed_findings(pid):
+    """The Critical and High findings the review report routes to a person, each with its line from the report, for the decision form."""
+    f = pdir(pid) / "review" / "briefs" / "review-report.md"
+    if not f.exists():
+        return []
+    rep = f.read_text()
+    sec = rep.split("## Routed for human disposition", 1)[-1].split("\n## ", 1)[0].splitlines()
+    out = []
+    for fid, sev in review_agent.routed(rep):
+        key = fid.split(" ", 1)[1] if fid.startswith("Scanner ") else f"**{fid}**"
+        out.append(dict(id=fid, severity=sev, text=next((ln[2:] for ln in sec if ln.startswith("- ") and key in ln), fid)[:300]))
+    return out
+
+
+def saved_dispositions(pid):
+    f = pdir(pid) / "inputs" / "dispositions.json"
+    try:
+        return json.loads(f.read_text()) if f.exists() else []
+    except ValueError:
+        return []
+
+
+def save_dispositions(pid, data):
+    """The tech lead's decisions from the form, checked by the Review agent's own rules, saved as the file the disposition step reads. Findings left undecided are simply not listed."""
+    sev = {x["id"]: x["severity"] for x in routed_findings(pid)}
+    if not sev:
+        raise ValueError("The review report routes no Critical or High finding, so there is nothing to decide.")
+    keep, problems = [], []
+    for e in data.get("entries") or []:
+        if not (e.get("decision") or "").strip():
+            continue
+        f = str(e.get("finding", ""))
+        e = dict(finding=f, decision=e["decision"], reason=" ".join(str(e.get("reason", "")).split()), **({"expires": e["expires"]} if e.get("expires") else {}))
+        if f not in sev:
+            problems.append(f"{f}: not a routed finding")
+        elif why := review_agent.check_entry(e, sev[f]):
+            problems.append(f"{f}: {why}")
+        else:
+            keep.append(e)
+    if problems:
+        raise ValueError("; ".join(problems))
+    (pdir(pid) / "inputs" / "dispositions.json").write_text(json.dumps(keep, indent=1))
+    p = load(pid)
+    p["docs"] = [x for x in p["docs"] if x["name"] != "dispositions.json"] + [dict(name="dispositions.json", kind="waiver")]
+    save(pid, p)
+    return dict(saved=len(keep), undecided=[f for f in sev if f not in {k["finding"] for k in keep}])
+
+
 def sre_incidents(pid):
     root = pdir(pid) / "sre" / "incidents"
     return [json.loads((f).read_text()) | {"id": f.parent.name} for f in sorted(root.glob("INC-*/incident.json"))] if root.exists() else []
@@ -593,7 +641,7 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid))
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid), routed=routed_findings(pid), dispositions=saved_dispositions(pid))
 
 
 def incident_action(pid, data):
@@ -720,7 +768,7 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path).path
             if u == "/api/projects":
                 return self._send(200, create(data))
-            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision|skip|incident)", u)
+            m = re.fullmatch(r"/api/projects/([^/]+)/(docs|settings|run|respond|stop|handoff-decision|skip|incident|dispositions)", u)
             if not m:
                 return self._send(404, {"error": "Not found."})
             pid, act = m.groups()
@@ -731,6 +779,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, settings(pid, data))
             if act == "skip":
                 return self._send(200, skip(pid, data))
+            if act == "dispositions":
+                return self._send(200, save_dispositions(pid, data))
             if act == "incident":
                 return self._send(200, incident_action(pid, data))
             if act == "run":

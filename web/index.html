@@ -121,6 +121,15 @@ function render(){const p=view.project;document.title=(view.run&&view.run.pendin
  $("log").textContent=view.run&&view.run.log.length?view.run.log.join("\n"):"Nothing has run yet.";$("log").scrollTop=1e9}
 const TITLES={triage:"Triage",architect:"Architect",coder:"Coder",review:"Review",qa:"QA",release:"Release",sre:"SRE"};
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1e3?(n/1e3).toFixed(1)+"k":String(n);
+let dispDraft={};
+function dispForm(el){const rt=view.routed||[];if(!rt.length)return;const prev={...Object.fromEntries((view.dispositions||[]).map(d=>[d.finding,d])),...dispDraft};
+ const rows=rt.map(f=>{const p=prev[f.id]||{};const sel=h("select",{},...[["","No decision yet"],["fix","Fix (re-run the review after)"],["defer","Defer"],["waive","Waive (temporary risk acceptance)"]].map(([v,t])=>h("option",{value:v,...(p.decision===v?{selected:true}:{})},t)));
+  const why=h("textarea",{style:"min-height:44px",placeholder:"Why (at least 12 words): what makes this acceptable or when it will be fixed"},p.reason||"");const exp=h("input",{type:"date",value:p.expires||"",title:"Waivers only: when the waiver ends"});
+  const keep=()=>{dispDraft[f.id]={finding:f.id,decision:sel.value,reason:why.value,expires:exp.value}};sel.onchange=why.oninput=exp.onchange=keep;
+  return {f,sel,why,exp,node:h("div",{style:"border-top:1px solid var(--line);padding:8px 0"},h("div",{},h("b",{},`${f.id} (${f.severity})`)," ",h("span",{class:"muted"},f.text)),h("div",{class:"row"},sel,exp),why)}});
+ const err=h("span",{class:"err"});const save=h("button",{onclick:async()=>{err.textContent="";try{const r=await api("POST",`/api/projects/${cur}/dispositions`,{entries:rows.map(x=>({finding:x.f.id,decision:x.sel.value,reason:x.why.value,expires:x.exp.value}))});
+  dispDraft={};err.style.color="var(--ok)";err.textContent=`Saved ${r.saved} decision(s)${r.undecided.length?`; still undecided: ${r.undecided.join(", ")}`:""}. Now run "Disposition of Critical and High findings".`;await refresh()}catch(e){err.style.color="";err.textContent=e.message}}},"Save decisions");
+ el.append(h("div",{style:"margin-top:12px"},h("b",{},"Decisions on Critical and High findings (tech lead)"),h("div",{class:"muted"},"Only a fix removes a finding. A waiver ends on its date (High: 30 days at most, Critical: 14) and a Critical waiver also needs the Release manager's approval when you run the step."),...rows.map(x=>x.node),h("div",{class:"row"},save,err)))}
 function useLine(a){return a?`Model use so far: ${a.calls} call${a.calls===1?"":"s"}, ${fmt(a.tokens_in)} tokens in, ${fmt(a.tokens_out)} out, $${a.usd.toFixed(2)}`:"No model calls yet"}
 function drawUsage(){const u=view.usage,t=u.total;$("usageSum").textContent=t.calls?`Model usage: ${t.calls} calls, ${fmt(t.tokens_in)} tokens in, ${fmt(t.tokens_out)} out, $${t.usd.toFixed(2)}`:"Model usage: none yet";
  $("usageBody").replaceChildren(...(t.calls?[h("table",{style:"width:100%;font-size:13px;border-collapse:collapse"},h("tr",{},...["Agent / step","Calls","Tokens in","Tokens out","USD","Seconds"].map(x=>h("th",{style:"text-align:left"},x))),
@@ -133,7 +142,7 @@ function drawPipeline(busy){const box=$("pipeline");
   ...(i<view.pipeline.length-1?[h("div",{class:"arrow"},"↓")]:[])]));box.dataset.built=String(view.pipeline.length)}
  for(const s of view.pipeline){const el=$("t"+s.agent);$("hc"+s.agent).replaceChildren(h("div",{class:"muted",style:"color:inherit;opacity:.7"},"Human checkpoint"),h("b",{},s.checkpoint),...(s.signers.length&&view.tracks[s.agent]?[h("div",{style:"opacity:.75"},"Roles that sign steps here: "+s.signers.join("; "))]:[]));
   if(!view.tracks[s.agent]){el.replaceChildren(h("h2",{style:"margin:0"},s.name),h("div",{class:"muted"},"Not available."));continue}
-  track(TITLES[s.agent],s.agent,el,busy);el.insertBefore(h('div',{class:'muted',style:'margin:-4px 0 8px'},useLine(view.usage.agents[s.agent])),el.children[1]);if(s.agent==="sre")sreBar(el,busy)}}
+  track(TITLES[s.agent],s.agent,el,busy);if(s.agent==="review")dispForm(el);el.insertBefore(h('div',{class:'muted',style:'margin:-4px 0 8px'},useLine(view.usage.agents[s.agent])),el.children[1]);if(s.agent==="sre")sreBar(el,busy)}}
 function track(title,agent,el,busy){const t=view.tracks[agent];const nxt=t.next;
  el.replaceChildren(h("div",{class:"row"},h("h2",{class:"grow",style:"margin:0"},`${title} (${t.approved} of ${t.total} approved${t.skipped?`, ${t.skipped} skipped`:""})`)),
   h("div",{class:"bar"},h("i",{style:`width:${100*(t.approved+t.skipped)/t.total}%`})),

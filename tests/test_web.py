@@ -648,3 +648,41 @@ def test_the_release_plan_gets_the_aws_profile_when_one_is_added(web, tmp_path):
     assert web("POST", f"/api/projects/{pid}/docs", dict(name="aws.json", text="{}", kind="aws"))[0] == 200
     d = tmp_path / "projects" / pid / "inputs"
     assert app.step_args(app.load(pid), "release", "plan") == ["--aws-profile", str(d / "aws.json")]
+
+
+def report_with(tmp_path, pid, body):
+    rb = tmp_path / "projects" / pid / "review" / "briefs"
+    rb.mkdir(parents=True, exist_ok=True)
+    (rb / "review-report.md").write_text("## Routed for human disposition (Critical and High findings still standing)\n" + body + "\n## Review coverage\n")
+
+
+ROUTED = "- **C1** (High, Confirmed, S): the check is skipped | impact | src/app.py:2\n- **Scanner** (Critical) `src/new.py:1`: secret, key in code\n"
+WHY = "The finding is behind a flag that stays off until the fix ships next sprint, and an alert fires on any use of it."
+
+
+def test_the_decision_form_lists_the_routed_findings_and_saves_only_decisions_the_review_rules_accept(web, tmp_path):
+    pid = new(web)
+    assert view(web, pid)["routed"] == []
+    assert web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[]))[0] == 400  # nothing is routed yet
+    report_with(tmp_path, pid, ROUTED)
+    v = view(web, pid)
+    assert [(x["id"], x["severity"]) for x in v["routed"]] == [("C1", "High"), ("Scanner src/new.py:1", "Critical")] and "the check is skipped" in v["routed"][0]["text"] and "secret, key in code" in v["routed"][1]["text"]
+    soon = (__import__("datetime").date.today() + __import__("datetime").timedelta(days=5)).isoformat()
+    code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason="too short", expires=soon)]))
+    assert code == 400 and "at least 12 words" in str(body)
+    code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="ZZ", decision="fix", reason=WHY)]))
+    assert code == 400 and "not a routed finding" in str(body)
+    code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason=WHY, expires=soon), dict(finding="Scanner src/new.py:1", decision="", reason="")]))
+    assert code == 200 and body == dict(saved=1, undecided=["Scanner src/new.py:1"])
+    v = view(web, pid)
+    assert v["dispositions"][0]["finding"] == "C1" and any(d["kind"] == "waiver" and d["name"] == "dispositions.json" for d in v["project"]["docs"])
+    assert app.step_args(app.load(pid), "review", "disposition") == ["--dispositions", str(tmp_path / "projects" / pid / "inputs" / "dispositions.json")]
+
+
+def test_the_form_file_is_exactly_what_the_disposition_step_reads(web, tmp_path):
+    pid = new(web)
+    report_with(tmp_path, pid, ROUTED)
+    soon = (__import__("datetime").date.today() + __import__("datetime").timedelta(days=5)).isoformat()
+    web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason=WHY, expires=soon)]))
+    saved = json.loads((tmp_path / "projects" / pid / "inputs" / "dispositions.json").read_text())
+    assert saved == [dict(finding="C1", decision="waive", reason=WHY, expires=soon)] and app.review_agent.check_entry(saved[0], "High") == ""
