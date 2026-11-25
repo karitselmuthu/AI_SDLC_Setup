@@ -433,7 +433,7 @@ def routed(report):
             out.append((m.group(1), m.group(2)))
         elif m := re.match(r"- \*\*Scanner\*\* \(Critical\) `([^`]+)`", ln):
             out.append((f"Scanner {m.group(1)}", "Critical"))
-    return out
+    return list(dict.fromkeys(out))  # two scanner findings on the same line (a key and a credential-like value) are one decision
 
 
 def check_entry(e, sev):

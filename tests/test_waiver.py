@@ -121,7 +121,7 @@ def test_routed_findings_block_the_gate_until_every_one_has_a_valid_approved_wai
     RL.run_step("request", [str(rl["req"])])
     waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")])
     g = gate(rl)
-    assert g[1] == "MET" and "2 finding(s) waived by the tech lead, valid until 2026-12-01" in g[2] and "Waived, not fixed" in g[2]
+    assert g[1] == "MET" and "2 decision(s) cover the 2 routed finding(s); all waived by the tech lead, valid until 2026-12-01" in g[2] and "Waived, not fixed" in g[2]
     waiver_files(rl, [("C1", "waive")])
     assert gate(rl)[1] == "UNMET" and "Scanner src/new.py:1 has no decision" in gate(rl)[2]
 
@@ -153,3 +153,12 @@ def test_a_waiver_is_void_when_the_review_report_changes_or_the_record_is_not_ap
 def test_with_nothing_routed_the_gate_needs_no_waiver(rl):
     RL.run_step("request", [str(rl["req"])])
     assert gate(rl)[1] == "MET" and "none routed" in gate(rl)[2]
+
+
+def test_two_scanner_findings_on_one_line_are_one_decision_and_do_not_break_the_gate(rl):
+    two = REPORT.replace("Routed for human disposition: 2.", "Routed for human disposition: 3.") + "- **Scanner** (Critical) `src/new.py:1`: second finding\n"
+    two = two.replace("## Review coverage", "- **Scanner** (Critical) `src/new.py:1`: another\n## Review coverage", 1)
+    assert [i for i, _ in R.routed(two)] == ["C1", "Scanner src/new.py:1"]
+    RL.run_step("request", [str(rl["req"])])
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], report=two)
+    assert gate(rl)[1] == "MET" and "cover the 3 routed finding(s)" in gate(rl)[2]

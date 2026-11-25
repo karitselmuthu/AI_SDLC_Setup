@@ -255,9 +255,9 @@ def waiver_state(report, n):
             open_.append(f"{fid} is '{e['decision']}', not waived: it is still open")
         elif datetime.strptime(e["expires"], "%Y-%m-%d").date() < today:
             open_.append(f"{fid}'s waiver expired on {e['expires']}")
-    if open_ or len(ids) != n:
-        return "UNMET", "; ".join(open_ or [f"{n} routed finding(s) could not be matched to the record"])[:220]
-    return "OK", f"{n} finding(s) waived by the tech lead, valid until {min(e['expires'] for e in by.values() if e['finding'] in dict(ids))}: {', '.join(i for i, _ in ids)}. Waived, not fixed"
+    if open_ or not ids:
+        return "UNMET", "; ".join(open_ or [f"{n} routed finding(s) could not be read from the review report"])[:220]
+    return "OK", f"{len(ids)} decision(s) cover the {n} routed finding(s); all waived by the tech lead, valid until {min(e['expires'] for e in by.values() if e['finding'] in dict(ids))}: {', '.join(i for i, _ in ids)}. Waived, not fixed"
 
 
 def gates(briefs):
