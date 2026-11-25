@@ -53,6 +53,7 @@ summary{cursor:pointer;font-weight:600}
 <section id="newForm" class="card">
   <h2>New project</h2>
   <label for="nName">Project name</label><input id="nName" maxlength="80" placeholder="e.g. Smart Meeting Assistant">
+  <label for="nKind">Is this a new project or an existing one?</label><select id="nKind"><option value="new">New: starting from an idea</option><option value="existing">Existing: a live system with a backlog</option></select>
   <label for="nDesc">Project information</label>
   <textarea id="nDesc" style="min-height:150px" placeholder="What does it do, for whom, in which industry? Constraints, systems it must connect to, budget or deadline if you know them. Anything you leave out is treated as unknown, never invented."></textarea>
   <label for="nFiles">Supporting documents (optional: RFP, notes, diagrams, standards)</label><input id="nFiles" type="file" multiple>
@@ -75,6 +76,8 @@ summary{cursor:pointer;font-weight:600}
         <div class="row" style="margin-top:8px"><button id="addDoc">Add</button><span class="err" id="aErr"></span></div></div>
       <div class="grow" style="min-width:260px"><h2>Coder setup</h2><p class="muted" style="margin-top:0">The Coder works in a git repository on your computer and needs the approved ticket.</p>
         <label for="sRepo">Repository folder (a git repository)</label><input id="sRepo" placeholder="/path/to/repo">
+        <div class="row"><button class="ghost" id="mkRepo">Create an empty repository for me</button></div>
+        <div class="row"><input id="tBy" placeholder="your name" style="max-width:160px"><button class="ghost" id="mkTicket">Draft and approve the first ticket from the Architect baseline</button></div>
         <label for="sTicket">Approved ticket (status, description, acceptance criteria)</label><textarea id="sTicket"></textarea>
         <label for="sChecks">Local check commands (optional, one per line; otherwise chosen from the detected stack)</label><textarea id="sChecks" style="min-height:50px" placeholder="pytest -q"></textarea>
         <label for="sActions">SRE actions to authorize (optional, one per line; leave empty to stay read-only)</label><textarea id="sActions" style="min-height:40px" placeholder="Restart worker pool"></textarea>
@@ -103,13 +106,15 @@ async function listProjects(){const items=await api("GET","/api/projects");const
 function showNew(){cur=null;view=null;history.replaceState(null,"","#");$("newForm").hidden=false;$("projectView").hidden=true;listProjects()}
 async function select(id){cur=id;view=null;needKey=handKey="";setupFor=null;history.replaceState(null,"","#"+id);$("newForm").hidden=true;$("projectView").hidden=false;await refresh();listProjects()}
 $("newBtn").onclick=showNew;
-$("createBtn").onclick=async()=>{$("nErr").textContent="";try{const p=await api("POST","/api/projects",{name:$("nName").value,description:$("nDesc").value});
+$("createBtn").onclick=async()=>{$("nErr").textContent="";try{const p=await api("POST","/api/projects",{name:$("nName").value,description:$("nDesc").value,kind:$("nKind").value});
  for(const f of $("nFiles").files)await upload(p.id,f,"source");$("nName").value=$("nDesc").value="";$("nFiles").value="";await select(p.id)}catch(e){$("nErr").textContent=e.message}};
 async function upload(id,f,kind){const text=/\.(md|txt|csv|json|ya?ml|html)$/i.test(f.name);let body={name:f.name,kind};
  if(text)body.text=await f.text();else body.b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.readAsDataURL(f)});return api("POST",`/api/projects/${id}/docs`,body)}
 $("addDoc").onclick=async()=>{$("aErr").textContent="";try{let n=0;for(const f of $("aFile").files){await upload(cur,f,$("aKind").value);n++}
  if($("aText").value.trim()){await api("POST",`/api/projects/${cur}/docs`,{name:$("aName").value||"pasted-note.md",kind:$("aKind").value,text:$("aText").value});n++}
  if(!n)throw new Error("Choose a file or paste some text first.");$("aFile").value="";$("aText").value="";$("aName").value="";await refresh();setupFor=null;fillSetup()}catch(e){$("aErr").textContent=e.message}};
+const setup=(b)=>async()=>{$("sErr").textContent="";try{await api("POST",`/api/projects/${cur}/settings`,b());$("sErr").textContent="Done.";setupFor=null;await refresh();fillSetup()}catch(e){$("sErr").textContent=e.message}};
+$("mkRepo").onclick=setup(()=>({create_repo:true}));$("mkTicket").onclick=setup(()=>({draft_ticket:true,approved_by:$("tBy").value}));
 $("saveSet").onclick=async()=>{$("sErr").textContent="";try{await api("POST",`/api/projects/${cur}/settings`,{repo:$("sRepo").value,ticket_text:$("sTicket").value,checks:$("sChecks").value.split("\n"),actions:$("sActions").value.split("\n")});$("sErr").textContent="Saved.";await refresh()}catch(e){$("sErr").textContent=e.message}};
 function fillSetup(){if(!view||setupFor===cur)return;setupFor=cur;const p=view.project;$("sRepo").value=p.repo||"";$("sChecks").value=(p.checks||[]).join("\n");$("sActions").value=(p.actions||[]).join("\n");$("sTicket").placeholder=p.ticket?"A ticket is saved. Paste new text to replace it.":"Paste the approved ticket here.";
  $("docs").replaceChildren(...p.docs.map(d=>h("div",{},d.name+" ",h("span",{class:"pill"},({aws:"AWS profile",waiver:"dispositions and waivers",issues:"issues to triage",meeting:"meeting notes",release:"release request",sre:"SRE service document",evidence:"SRE evidence",incident:"SRE incident note",recovery:"SRE recovery evidence",policy:"SRE policy",allowlist:"SRE allowlist"})[d.kind]||"source"))))}
@@ -141,7 +146,7 @@ function drawUsage(){const u=view.usage,t=u.total;$("usageSum").textContent=t.ca
   h("div",{class:"muted",style:"margin-top:6px"},"Input tokens include cache reads and writes. Steps built by code make no model calls and cost nothing.")]:[h("div",{class:"muted"},"Nothing has used the model in this project yet.")]))}
 function drawPipeline(busy){const box=$("pipeline");
  if(box.dataset.built!==String(view.pipeline.length)){box.replaceChildren(...view.pipeline.flatMap((s,i)=>[
-  h("div",{class:"stage"},h("div",{class:"side who"},h("b",{},`${i+1}. ${s.name}`),h("div",{class:"muted"},`${s.stage} stage`),h("div",{},s.does)),h("div",{class:"card",id:"t"+s.agent}),h("div",{class:"side hc"+(/^Auto retry/.test(s.checkpoint)?" auto":""),id:"hc"+s.agent})),
+  h("div",{class:"stage"},h("div",{class:"side who"},h("b",{},`${i+1}. ${s.name}`),h("div",{class:"muted"},`${s.stage} stage`),h("div",{},s.does),s.note?h("div",{class:"muted",style:"margin-top:6px"},s.note):""),h("div",{class:"card",id:"t"+s.agent}),h("div",{class:"side hc"+(/^Auto retry/.test(s.checkpoint)?" auto":""),id:"hc"+s.agent})),
   ...(i<view.pipeline.length-1?[h("div",{class:"arrow"},"↓")]:[])]));box.dataset.built=String(view.pipeline.length)}
  for(const s of view.pipeline){const el=$("t"+s.agent);$("hc"+s.agent).replaceChildren(h("div",{class:"muted",style:"color:inherit;opacity:.7"},"Human checkpoint"),h("b",{},s.checkpoint),...(s.signers.length&&view.tracks[s.agent]?[h("div",{style:"opacity:.75"},"Roles that sign steps here: "+s.signers.join("; "))]:[]));
   if(!view.tracks[s.agent]){el.replaceChildren(h("h2",{style:"margin:0"},s.name),h("div",{class:"muted"},"Not available."));continue}

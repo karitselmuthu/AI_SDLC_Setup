@@ -151,6 +151,36 @@ def test_coder_setup_validates_the_repository_and_stores_the_ticket(web, tmp_pat
     assert (tmp_path / "projects" / pid / "inputs/ticket.md").read_text().startswith("Approved.")
 
 
+def test_new_and_existing_projects_are_told_apart_and_the_notes_follow(web):
+    pid = new(web)
+    notes = {x["agent"]: x["note"] for x in view(web, pid)["pipeline"]}
+    assert "Optional" in notes["triage"] and "after the first release" in notes["sre"] and notes["architect"] == ""
+    st, p = web("POST", "/api/projects", dict(name="Old", description="A live system with a backlog.", kind="existing"))
+    assert st == 200 and {x["agent"]: x["note"] for x in view(web, p["id"])["pipeline"]}["triage"] == ""
+    assert web("POST", "/api/projects", dict(name="X", description="A real description here.", kind="weird"))[0] == 400
+
+
+def test_an_empty_repository_is_made_for_a_new_project(web, tmp_path):
+    pid = new(web)
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(create_repo=True))
+    assert st == 200 and p["repo"] == str((tmp_path / "projects" / pid / "repo").resolve())
+    assert subprocess.run(["git", "-C", p["repo"], "log", "--oneline"], capture_output=True, text=True).stdout.strip().endswith("Start the project")
+    assert web("POST", f"/api/projects/{pid}/settings", dict(create_repo=True))[0] == 400  # never replaces a repository that is set
+
+
+def test_the_first_ticket_comes_only_from_an_approved_baseline_and_names_its_approver(web, tmp_path, monkeypatch):
+    pid = new(web)
+    assert web("POST", f"/api/projects/{pid}/settings", dict(draft_ticket=True, approved_by="Asha"))[0] == 400  # handoff not approved
+    briefs = tmp_path / "projects" / pid / "architect/briefs"
+    (briefs / "requirements.md").write_text("| R-001 | Take in PDFs | Technical | Preferred | C1 | brief | Proposed: every PDF is taken in |\n| Q1 | not a requirement |\n")
+    real = app.steps_status
+    monkeypatch.setattr(app, "steps_status", lambda pid_, agent: [dict(x, status="approved") for x in real(pid_, agent)] if agent == "architect" else real(pid_, agent))
+    assert web("POST", f"/api/projects/{pid}/settings", dict(draft_ticket=True))[0] == 400  # no approver named
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(draft_ticket=True, approved_by="Asha"))
+    ticket = (tmp_path / "projects" / pid / "inputs/ticket.md").read_text()
+    assert st == 200 and p["ticket"] is True and "Approved by Asha" in ticket and "R-001: Take in PDFs. Acceptance: Proposed: every PDF is taken in" in ticket and "Q1" not in ticket
+
+
 # ---------------------------------------------------------------- security -------------------------------------------
 
 def test_only_localhost_hosts_are_served(web):

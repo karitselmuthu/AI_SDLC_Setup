@@ -113,6 +113,9 @@ def create(data):
         raise ValueError("Give the project a name (up to 80 characters).")
     if len(desc) < 10:
         raise ValueError("Describe the project in at least a sentence: what it does, for whom, any constraints you know.")
+    kind = data.get("kind") or "new"
+    if kind not in ("new", "existing"):
+        raise ValueError("The project is either new or existing.")
     pid = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "project") + "-" + secrets.token_hex(2)
     d = PROJECTS / pid
     for sub in ("inputs", "architect/briefs", "architect/baseline", "coder/briefs", "qa/briefs"):
@@ -120,7 +123,7 @@ def create(data):
     (d / "inputs/project-brief.md").write_text(
         f"# Project description (supplied by the user)\n\nSource: entered on the web page by the user. Nothing else is known about the client, "
         f"the industry, the environment, the budget or the timeline unless a document says so. Anything not stated here is not known.\n\n## {name}\n\n{desc}\n")
-    p = dict(id=pid, name=name, description=desc, created=datetime.now(timezone.utc).isoformat(timespec="seconds"), repo="", ticket=False,
+    p = dict(id=pid, name=name, description=desc, kind=kind, created=datetime.now(timezone.utc).isoformat(timespec="seconds"), repo="", ticket=False,
              checks=[], note="", docs=[dict(name="project-brief.md", kind="source")])
     (d / "project.json").write_text(json.dumps(p, indent=1))
     return p
@@ -145,6 +148,23 @@ def add_doc(pid, data):
     return p
 
 
+def draft_ticket(pid, p, by):
+    """The first build ticket for a new project, assembled by code (no model) from the approved architect baseline. The person who clicks is the approver."""
+    st = next(x for x in steps_status(pid, "architect") if x["name"] == "handoff")
+    reqs = pdir(pid) / "architect" / "briefs" / "requirements.md"
+    if st["status"] != "approved" or not reqs.exists():
+        raise ValueError("Approve the Architect handoff first: the first ticket is built from the approved requirements.")
+    rows = [re.sub(r"\s+", " ", l).strip() for l in reqs.read_text().splitlines() if re.match(r"\|\s*R-\d{3}\s*\|", l)]
+    if not rows:
+        raise ValueError("The requirements list no R-nnn requirement, so there is nothing to build a ticket from.")
+    crit = "\n".join(f"- {c[0]}: {c[1]}. Acceptance: {c[-1]}" for c in (r.strip("| ").split(" | ") for r in rows))
+    (pdir(pid) / "inputs/ticket.md").write_text(
+        f"# Ticket: build the first version of {p['name']}\n\nStatus: Approved by {by} on {datetime.now(timezone.utc):%Y-%m-%d} (drafted by the page from the approved Architect baseline)\n\n"
+        f"## Description\n{p['description']}\n\nBuild the first version in the empty repository, covering the requirements below. Requirements marked as depending on an open question "
+        f"(Q-numbers) are built only as far as the baseline allows; record what you assume.\n\n## Acceptance criteria\n{crit}\n")
+    return True
+
+
 def settings(pid, data):
     p = load(pid)
     if "repo" in data:
@@ -156,6 +176,21 @@ def settings(pid, data):
                 raise ValueError("The repository path must be an existing folder that is a git repository.")
             repo = str(r.resolve())
         p["repo"] = repo
+    if data.get("create_repo"):
+        if p["repo"]:
+            raise ValueError("This project already has a repository set.")
+        r = pdir(pid) / "repo"
+        r.mkdir(exist_ok=True)
+        (r / "README.md").write_text(f"# {p['name']}\n\nCreated by the pipeline as an empty starting point. The Coder builds here, on its own branch.\n")
+        git = ["git", "-C", str(r), "-c", "user.name=SDLC pipeline", "-c", "user.email=pipeline@localhost"]
+        for args in (["init", "-q"], ["add", "README.md"], ["commit", "-q", "-m", "Start the project"]):
+            subprocess.run(git + args, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        p["repo"] = str(r.resolve())
+    if data.get("draft_ticket"):
+        by = (data.get("approved_by") or "").strip()
+        if len(by) < 2:
+            raise ValueError("Give your name: you are approving this ticket.")
+        p["ticket"] = draft_ticket(pid, p, by) or p["ticket"]
     if "ticket_text" in data:
         text = (data["ticket_text"] or "").strip()
         if text:
@@ -197,7 +232,12 @@ PIPELINE = [("triage", "Triage Agent", "Plan", "Scores issue readiness", "Produc
             ("sre", "SRE Agent", "Operate", "Watches SLOs, triages incidents", "On-call engineer owns incidents")]
 
 
-def pipeline():
+NOTES = {"new": {"triage": "Optional for a new project: there is no backlog yet. Use it only if you already have issues to sort.",
+                 "sre": "Starts after the first release: there is nothing to watch before then."},
+         "existing": {}}
+
+
+def pipeline(kind="new"):
     def roles(agent):
         mod = MODS.get(agent)
         names = []
@@ -207,7 +247,7 @@ def pipeline():
                 if n not in names:
                     names.append(n)
         return names
-    return [dict(agent=a, name=n, stage=st, does=d, checkpoint=c, built=a in MODS, signers=roles(a)) for a, n, st, d, c in PIPELINE]
+    return [dict(agent=a, name=n, stage=st, does=d, checkpoint=c, built=a in MODS, signers=roles(a), note=NOTES[kind].get(a, "")) for a, n, st, d, c in PIPELINE]
 
 
 def briefs_of(pid, agent, step=None):
@@ -643,7 +683,7 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid), routed=routed_findings(pid), dispositions=saved_dispositions(pid), waivers=review_agent.waiver_status(pdir(pid) / 'review' / 'briefs'))
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(p.get("kind", "existing")), usage=usage(pid), routed=routed_findings(pid), dispositions=saved_dispositions(pid), waivers=review_agent.waiver_status(pdir(pid) / 'review' / 'briefs'))
 
 
 def incident_action(pid, data):
