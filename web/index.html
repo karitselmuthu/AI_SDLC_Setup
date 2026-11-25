@@ -27,7 +27,7 @@ ul.plist li button.on{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--
 .muted{color:var(--mute);font-size:13px}.err{color:var(--bad);font-size:13px;margin-top:6px}
 .stage{display:grid;grid-template-columns:minmax(190px,230px) 1fr minmax(190px,240px);gap:14px;align-items:start;margin-bottom:6px}@media (max-width:1100px){.stage{grid-template-columns:1fr}}
 .stage .side{border-radius:10px;padding:12px 14px;font-size:13px}.stage .who{background:var(--card);border:1px solid var(--line)}.stage .hc{background:#16181d;color:#f3f4f6}.stage .hc.auto{background:transparent;color:var(--ink);border:1px dashed var(--mute)}
-.stage .side b{display:block;font-size:15px;margin-bottom:3px}.arrow{text-align:center;color:var(--mute);margin:2px 0 6px}
+.stage .side b{display:block;font-size:15px;margin-bottom:3px}main,.stage>*{min-width:0}.stage.closed{grid-template-columns:1fr}.stage.closed>.card,.stage.closed>.hc{display:none}.stage .who{cursor:pointer}.stage .who:hover,.stage.open .who{border-color:var(--accent)}.stage .go{float:right;font-size:12px;color:var(--accent)}.arrow{text-align:center;color:var(--mute);margin:2px 0 6px}
 .bar{height:6px;background:var(--todobg);border-radius:4px;overflow:hidden;margin:6px 0 10px}.bar i{display:block;height:100%;background:var(--ok)}
 ol.steps{list-style:none;margin:0;padding:0}
 ol.steps li{border-top:1px solid var(--line);padding:9px 0;display:grid;grid-template-columns:1fr auto;gap:4px 10px}
@@ -45,7 +45,7 @@ summary{cursor:pointer;font-weight:600}
 </style>
 </head>
 <body>
-<header><h1>AI SDLC Tracker</h1><span>Give your project information, then follow the stages: Triage, Design, Build, Test, Review, Deploy and Operate. Nothing is approved until you approve it.</span></header>
+<header><h1>AI SDLC Tracker</h1><span>Create a project, then click a stage to see its steps and your action items. Nothing is approved until you approve it.</span></header>
 <div class="layout">
 <aside><button class="primary" id="newBtn" style="width:100%">+ New project</button><ul class="plist" id="plist"></ul>
 <p class="muted">Local page: it listens only on this computer. Anyone using this browser can approve.</p></aside>
@@ -89,7 +89,7 @@ summary{cursor:pointer;font-weight:600}
 <dialog id="dlg"><div class="row"><b id="dlgTitle" class="grow"></b><button id="dlgClose">Close</button></div><div class="doc" id="dlgBody" style="max-height:70vh;margin-top:8px"></div></dialog>
 <script>
 const TOKEN="__TOKEN__";
-let cur=null, view=null, needKey="", handKey="", setupFor=null;
+let openAgent=null, cur=null, view=null, needKey="", handKey="", setupFor=null;
 const $=id=>document.getElementById(id);
 function h(tag,attrs={},...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==="class")e.className=v;else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else if(v!==false&&v!=null)e.setAttribute(k,v===true?"":v)}for(const c of kids.flat(Infinity))e.append(c?.nodeType?c:document.createTextNode(c??""));return e}
 async function api(method,path,body){const r=await fetch(path,{method,headers:{"Content-Type":"application/json","X-Token":TOKEN},body:body?JSON.stringify(body):undefined});const j=await r.json().catch(()=>({error:"Bad reply"}));if(!r.ok)throw new Error(j.error||r.statusText);return j}
@@ -104,7 +104,7 @@ while(i<lines.length){const l=lines[i];
 return out.join("")}
 async function listProjects(){const items=await api("GET","/api/projects");const ul=$("plist");ul.replaceChildren(...items.map(p=>h("li",{},h("button",{class:p.id===cur?"on":"",onclick:()=>select(p.id)},p.name))))}
 function showNew(){cur=null;view=null;history.replaceState(null,"","#");$("newForm").hidden=false;$("projectView").hidden=true;listProjects()}
-async function select(id){cur=id;view=null;needKey=handKey="";setupFor=null;history.replaceState(null,"","#"+id);$("newForm").hidden=true;$("projectView").hidden=false;await refresh();listProjects()}
+async function select(id){cur=id;view=null;openAgent=null;needKey=handKey="";setupFor=null;history.replaceState(null,"","#"+id);$("newForm").hidden=true;$("projectView").hidden=false;await refresh();listProjects()}
 $("newBtn").onclick=showNew;
 $("createBtn").onclick=async()=>{$("nErr").textContent="";try{const p=await api("POST","/api/projects",{name:$("nName").value,description:$("nDesc").value,kind:$("nKind").value});
  for(const f of $("nFiles").files)await upload(p.id,f,"source");$("nName").value=$("nDesc").value="";$("nFiles").value="";await select(p.id)}catch(e){$("nErr").textContent=e.message}};
@@ -146,11 +146,14 @@ function drawUsage(){const u=view.usage,t=u.total;$("usageSum").textContent=t.ca
   h("div",{class:"muted",style:"margin-top:6px"},"Input tokens include cache reads and writes. Steps built by code make no model calls and cost nothing.")]:[h("div",{class:"muted"},"Nothing has used the model in this project yet.")]))}
 function drawPipeline(busy){const box=$("pipeline");
  if(box.dataset.built!==String(view.pipeline.length)){box.replaceChildren(...view.pipeline.flatMap((s,i)=>[
-  h("div",{class:"stage"},h("div",{class:"side who"},h("b",{},`${i+1}. ${s.name}`),h("div",{class:"muted"},`${s.stage} stage`),h("div",{},s.does),s.note?h("div",{class:"muted",style:"margin-top:6px"},s.note):""),h("div",{class:"card",id:"t"+s.agent}),h("div",{class:"side hc"+(/^Auto retry/.test(s.checkpoint)?" auto":""),id:"hc"+s.agent})),
+  h("div",{class:"stage closed",id:"st"+s.agent},h("div",{class:"side who",title:"Click to open this stage",onclick:()=>{openAgent=openAgent===s.agent?null:s.agent;refresh()}},h("span",{class:"go",id:"go"+s.agent}),h("b",{},`${i+1}. ${s.name}`),h("div",{class:"muted",id:"sm"+s.agent}),h("div",{class:"muted"},`${s.stage} stage`),h("div",{},s.does),s.note?h("div",{class:"muted",style:"margin-top:6px"},s.note):""),h("div",{class:"card",id:"t"+s.agent}),h("div",{class:"side hc"+(/^Auto retry/.test(s.checkpoint)?" auto":""),id:"hc"+s.agent})),
   ...(i<view.pipeline.length-1?[h("div",{class:"arrow"},"↓")]:[])]));box.dataset.built=String(view.pipeline.length)}
- for(const s of view.pipeline){const el=$("t"+s.agent);$("hc"+s.agent).replaceChildren(h("div",{class:"muted",style:"color:inherit;opacity:.7"},"Human checkpoint"),h("b",{},s.checkpoint),...(s.signers.length&&view.tracks[s.agent]?[h("div",{style:"opacity:.75"},"Roles that sign steps here: "+s.signers.join("; "))]:[]));
+ for(const s of view.pipeline){const el=$("t"+s.agent),isOpen=openAgent===s.agent;$("st"+s.agent).className="stage "+(isOpen?"open":"closed");$("go"+s.agent).textContent=isOpen?"Close ▴":"Open ▾";$("sm"+s.agent).textContent=summary(s.agent);if(!isOpen)continue;$("hc"+s.agent).replaceChildren(h("div",{class:"muted",style:"color:inherit;opacity:.7"},"Human checkpoint"),h("b",{},s.checkpoint),...(s.signers.length&&view.tracks[s.agent]?[h("div",{style:"opacity:.75"},"Roles that sign steps here: "+s.signers.join("; "))]:[]));
   if(!view.tracks[s.agent]){el.replaceChildren(h("h2",{style:"margin:0"},s.name),h("div",{class:"muted"},"Not available."));continue}
   track(TITLES[s.agent],s.agent,el,busy);if(s.agent==="review")dispForm(el);el.insertBefore(h('div',{class:'muted',style:'margin:-4px 0 8px'},useLine(view.usage.agents[s.agent])),el.children[1]);if(s.agent==="sre")sreBar(el,busy)}}
+function summary(agent){const t=view.tracks[agent];if(!t)return "Not available";const r=view.run;
+ if(r&&r.agent===agent&&["running","awaiting"].includes(r.state))return r.pending?"Needs you: "+r.pending.role:"Running: "+r.step;
+ const nx=t.steps.find(s=>s.name===t.next);return `${t.approved+t.skipped} of ${t.total} steps done`+(nx?`. Next: ${nx.label}`:t.approved+t.skipped===t.total?". Complete":". Waiting on an earlier step")}
 function track(title,agent,el,busy){const t=view.tracks[agent];const nxt=t.next;
  el.replaceChildren(h("div",{class:"row"},h("h2",{class:"grow",style:"margin:0"},`${title} (${t.approved} of ${t.total} approved${t.skipped?`, ${t.skipped} skipped`:""})`)),
   h("div",{class:"bar"},h("i",{style:`width:${100*(t.approved+t.skipped)/t.total}%`})),
