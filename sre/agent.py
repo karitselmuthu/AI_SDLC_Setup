@@ -34,7 +34,8 @@ from core import ask, flagged, false_approval, approve  # noqa: E402
 from architect import baseline  # noqa: E402
 from coder import agent as C  # noqa: E402
 from qa import agent as Q  # noqa: E402
-from release import agent as RL  # noqa: E402  (shared: run_cmd, scrub, passes, rows, clean, stated)
+from release import agent as RL  # noqa: E402
+from review import agent as RV  # noqa: E402  (shared: the reason-relevance test)  (shared: run_cmd, scrub, passes, rows, clean, stated)
 from sre import evidence as E  # noqa: E402
 
 core.AGENTS["sre"] = dict(
@@ -526,12 +527,14 @@ def auth_path(briefs):
 HIGH_RISK_MAX_DAYS, SECOND = 7, "Service owner (accepts the risk of a High risk action)"
 
 
-def high_risk_waiver(w):
+def high_risk_waiver(w, action=""):
     """Why the policy's High-risk waiver does not hold, or ''. A bare true is not enough: it needs a reason and a short expiry, and a second person approves the run."""
     if not isinstance(w, dict):
         return "the policy has no High-risk waiver (allow_high_risk: {reason, expires})"
     if len(str(w.get("reason", "")).split()) < 12:
         return "the High-risk waiver needs a reason of at least 12 words"
+    if action and not RV.terms(w["reason"]) & RV.terms(action):
+        return f"the High-risk waiver reason does not mention the action ('{action}'): say why this action is worth its risk"
     try:
         d = datetime.strptime(str(w.get("expires", "")), "%Y-%m-%d").date()
     except ValueError:
@@ -550,7 +553,7 @@ def refusal(policy, entry, name):
         return "the policy does not allow remediation (read-only is the default)"
     if policy.get("environments") and env not in policy["environments"]:
         return f"the policy does not allow changes in environment '{env or 'not stated'}'"
-    if entry.get("risk") == "High" and (why := high_risk_waiver(policy.get("allow_high_risk"))):
+    if entry.get("risk") == "High" and (why := high_risk_waiver(policy.get("allow_high_risk"), name)):
         return "the action is High risk and " + why
     if not entry.get("command") or not entry.get("target"):
         return "the allowlist entry needs a command and a fixed target"

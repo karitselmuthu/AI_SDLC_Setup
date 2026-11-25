@@ -503,7 +503,8 @@ def test_a_high_risk_action_needs_a_dated_waiver_with_a_reason_and_a_second_appr
                      (dict(remediation="allowed", allow_high_risk=dict(WAIVER, reason="because")), "at least 12 words"),
                      (dict(remediation="allowed", allow_high_risk=dict(WAIVER, expires="2026-11-20")), "expired on 2026-11-20"),
                      (dict(remediation="allowed", allow_high_risk=dict(WAIVER, expires="2026-12-30")), "at most 7 days"),
-                     (dict(remediation="allowed", allow_high_risk={"reason": WAIVER["reason"]}), "expiry date")):
+                     (dict(remediation="allowed", allow_high_risk={"reason": WAIVER["reason"]}), "expiry date"),
+                     (dict(remediation="allowed", allow_high_risk=dict(WAIVER, reason="Customers are waiting and the payments team agreed to this being done during the quiet period tonight.")), "does not mention the action")):
         p, a, mark = files(sr, policy=pol, entry=hi)
         S.run_remediate(["A1"], p, a, str(sr["tmp"]))
         assert why in text(sr, "action-record.md") and not mark.exists(), why

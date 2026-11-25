@@ -269,7 +269,8 @@ def save_dispositions(pid, data):
     sev = {x["id"]: x["severity"] for x in routed_findings(pid)}
     if not sev:
         raise ValueError("The review report routes no Critical or High finding, so there is nothing to decide.")
-    keep, problems = [], []
+    keep, problems, used = [], [], {}
+    texts = review_agent.routed_text((pdir(pid) / "review" / "briefs" / "review-report.md").read_text())
     for e in data.get("entries") or []:
         if not (e.get("decision") or "").strip():
             continue
@@ -277,9 +278,10 @@ def save_dispositions(pid, data):
         e = dict(finding=f, decision=e["decision"], reason=" ".join(str(e.get("reason", "")).split()), **({"expires": e["expires"]} if e.get("expires") else {}))
         if f not in sev:
             problems.append(f"{f}: not a routed finding")
-        elif why := review_agent.check_entry(e, sev[f]):
+        elif why := review_agent.check_entry(e, sev[f], texts.get(f, ""), used):
             problems.append(f"{f}: {why}")
         else:
+            used[" ".join(e["reason"].lower().split())] = f
             keep.append(e)
     if problems:
         raise ValueError("; ".join(problems))

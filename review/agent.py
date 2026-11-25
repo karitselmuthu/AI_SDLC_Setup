@@ -436,12 +436,51 @@ def routed(report):
     return list(dict.fromkeys(out))  # two scanner findings on the same line (a key and a credential-like value) are one decision
 
 
-def check_entry(e, sev):
-    """Why a disposition entry is not accepted, or ''."""
+STOP = set("this that with from have been will were they them then than their there these those into onto only also each such being does done doing "
+           "finding findings issue issues risk risks fix fixed fixes code source value values because before after while which what when where whose about "
+           "would could should must need needs needed used uses using make made more most some same other another very just still already until until this next sprint week days "
+           "decision waive waived defer deferred reason accept accepted acceptable tracked ticket separately".split())
+
+
+GROUPS = [{"secret", "credential", "credentials", "key", "keys", "token", "password", "hardcoded", "akia", "aws"},
+          {"sql", "query", "queries", "injection", "inject", "parameter", "parameterised", "parameterized", "bound", "escape", "escaped", "wildcard", "wildcards", "concatenated"},
+          {"auth", "authentication", "authorisation", "authorization", "role", "roles", "permission", "permissions", "access", "staff", "login"},
+          {"personal", "email", "emails", "pii", "privacy", "data", "name", "names", "users"}]  # words that name the same concern, so "credential" answers a finding about an "access key"
+
+
+def terms(text):
+    """The meaningful words of a text, cut to five letters so 'parameter' and 'parameterised' match, plus a tag for each concern group it touches: a rough, honest
+    test of 'is this about the same thing'."""
+    words = re.findall(r"[a-z]+", str(text).lower())
+    out = {w[:5] for w in words if len(w) >= 4 and w not in STOP}
+    return out | {f"#{i}" for i, g in enumerate(GROUPS) if any(w in g for w in words)}
+
+
+def routed_text(report):
+    """finding id -> its full line in the report's routed list."""
+    sec = report.split("## Routed for human disposition", 1)[-1].split("\n## ", 1)[0]
+    out = {}
+    for ln in sec.splitlines():
+        if m := re.match(r"- \*\*([A-Z]\d+)\*\*[^:]*?\): ?(.*)", ln):  # drop the id, severity, status and dimension: they are labels, not what the finding is about
+            out.setdefault(m.group(1), m.group(2))
+        elif m := re.match(r"- \*\*Scanner\*\* \(Critical\) `([^`]+)`: ?(.*)", ln):
+            out[f"Scanner {m.group(1)}"] = (out.get(f"Scanner {m.group(1)}", "") + " " + m.group(2)).strip()
+    return out
+
+
+def check_entry(e, sev, text="", used=None):
+    """Why a disposition entry is not accepted, or ''. text is the finding's own line in the report: a reason has to be about that finding. used maps reasons already
+    accepted to their finding, so one reason cannot be pasted onto several. This is a rough test of relevance, not proof that the reason is true or good enough."""
     if e.get("decision") not in ("fix", "waive", "defer"):
         return "decision must be fix, waive or defer"
     if len(str(e.get("reason", "")).split()) < MIN_REASON_WORDS:
         return f"the reason needs at least {MIN_REASON_WORDS} words: say why, not just that"
+    key = " ".join(str(e["reason"]).lower().split())
+    if used and key in used:
+        return f"the same reason is already used for {used[key]}: give each decision its own reason"
+    if text and not terms(e["reason"]) & terms(text):
+        hint = ", ".join(sorted({w for w in re.findall(r"[a-z]{6,}", text.lower()) if w not in STOP}, key=len, reverse=True)[:4])
+        return f"the reason does not mention anything from this finding (it is about: {hint}); say how this finding is affected"
     if e["decision"] != "waive":
         return ""
     try:
@@ -469,11 +508,14 @@ def run_disposition(path):
         assert isinstance(given, list) and all(isinstance(x, dict) for x in given)
     except (OSError, ValueError, AssertionError):
         sys.exit("disposition: the file must be JSON: a list of objects with finding, decision, reason and expires.")
-    sev, seen, accepted, refused = dict(items), set(), [], []
+    sev, seen, accepted, refused, used, texts = dict(items), set(), [], [], {}, routed_text(report.read_text())
     for e in given:
         f = str(e.get("finding", "")).strip()
-        why = "this finding is not routed for disposition in the report" if f not in sev else "it already has a decision" if f in seen else check_entry(e, sev[f])
+        why = ("this finding is not routed for disposition in the report" if f not in sev else "it already has a decision" if f in seen
+               else check_entry(e, sev[f], texts.get(f, ""), used))
         seen.add(f)
+        if not why:
+            used[" ".join(str(e["reason"]).lower().split())] = f
         if why:
             refused.append((f, why))
         elif e["decision"] == "waive" and sev[f] == "Critical" and not approve(SECOND.split(" (")[0] + f" accepts the residual risk of the Critical finding {f} until {e['expires']}"):

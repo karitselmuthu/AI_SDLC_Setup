@@ -657,7 +657,7 @@ def report_with(tmp_path, pid, body):
 
 
 ROUTED = "- **C1** (High, Confirmed, S): the check is skipped | impact | src/app.py:2\n- **Scanner** (Critical) `src/new.py:1`: secret, key in code\n"
-WHY = "The finding is behind a flag that stays off until the fix ships next sprint, and an alert fires on any use of it."
+WHY = "The check is skipped only behind a flag that stays off until the fix ships next sprint, and an alert fires on any use of it."
 
 
 def test_the_decision_form_lists_the_routed_findings_and_saves_only_decisions_the_review_rules_accept(web, tmp_path):
@@ -670,6 +670,8 @@ def test_the_decision_form_lists_the_routed_findings_and_saves_only_decisions_th
     soon = (__import__("datetime").date.today() + __import__("datetime").timedelta(days=5)).isoformat()
     code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason="too short", expires=soon)]))
     assert code == 400 and "at least 12 words" in str(body)
+    code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="fix", reason="The wrong result appears only for input that the caller already guards against and tests.")]))
+    assert code == 400 and "does not mention anything from this finding" in str(body)
     code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="ZZ", decision="fix", reason=WHY)]))
     assert code == 400 and "not a routed finding" in str(body)
     code, body = web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason=WHY, expires=soon), dict(finding="Scanner src/new.py:1", decision="", reason="")]))

@@ -11,6 +11,8 @@ from test_release import rl, sib, text as rtext  # noqa: F401
 from test_review import rv, chain  # noqa: F401
 
 REASON = "The finding is in a feature flag that stays off until the fix ships next sprint, and monitoring alerts on any use of it."
+WRONG = "The wrong result only shows for input the caller already guards against, and a fix with tests ships in the next sprint before release."
+KEY = "The key is a fake placeholder in a sample file, the secret store holds the real one, and the platform team rotates it this week anyway."
 TODAY = datetime.date(2026, 11, 24)
 REPORT = ("# Review report\n## Scorecard\nRouted for human disposition: 2.\n## Routed for human disposition (Critical and High findings still standing)\n"
           "- **C1** (High, Confirmed, S): a behaviour | impact | src/app.py:2\n- **Scanner** (Critical) `src/new.py:1`: secret, key in code\n## Review coverage\nx\n")
@@ -27,7 +29,7 @@ def wv(rv, tmp_path, monkeypatch):
 
 
 def entries(*items):
-    return [dict(finding=f, decision=d, reason=REASON, **({"expires": e} if e else {})) for f, d, e in items]
+    return [dict(finding=f, decision=d, reason=KEY if f.startswith("Scanner") else WRONG, **({"expires": e} if e else {})) for f, d, e in items]
 
 
 def file(wv, data):
@@ -162,3 +164,35 @@ def test_two_scanner_findings_on_one_line_are_one_decision_and_do_not_break_the_
     RL.run_step("request", [str(rl["req"])])
     waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], report=two)
     assert gate(rl)[1] == "MET" and "cover the 3 routed finding(s)" in gate(rl)[2]
+
+
+def test_a_reason_must_be_about_the_finding_it_is_given_for(wv):
+    rep = (wv["briefs"] / "review-report.md").read_text()
+    sev, texts = dict(R.routed(rep)), R.routed_text(rep)
+    assert "AC1 sum" in texts["C1"] and not texts["C1"].startswith("- ") and "High" not in texts["C1"].split(":")[0]  # labels are dropped, the finding's own words stay
+    soon = "2026-12-10"
+    ok = dict(finding="C1", decision="waive", reason=WRONG, expires=soon)
+    assert R.check_entry(ok, "High", texts["C1"]) == ""
+    off = R.check_entry(dict(ok, reason=KEY), "High", texts["C1"])
+    assert "does not mention anything from this finding" in off and "say how this finding is affected" in off
+    assert R.check_entry(dict(ok, reason=KEY), "High") == ""  # no finding text to compare with: not checked
+
+
+def test_words_for_the_same_concern_count_as_a_match():
+    assert R.terms("a credential was committed") & R.terms("A hardcoded AWS access-key-ID is in source")
+    assert R.terms("the query is parameterised") & R.terms("f-string SQL injection in the search")
+    assert not R.terms("a credential was committed") & R.terms("SQL injection in the search query")
+
+
+def test_one_reason_cannot_be_pasted_onto_two_findings(wv):
+    R.run_disposition(file(wv, [dict(finding="C1", decision="fix", reason=WRONG), dict(finding="Scanner src/new.py:1", decision="fix", reason=WRONG)]))
+    t = record(wv)
+    assert "Scanner src/new.py:1: the reason does not mention" in t or "the same reason is already used for C1" in t
+    used = {" ".join(WRONG.lower().split()): "C1"}
+    assert "already used for C1" in R.check_entry(dict(finding="X", decision="fix", reason=WRONG), "High", "", used)
+
+
+def test_an_unrelated_reason_is_listed_as_not_accepted_in_the_record(wv):
+    R.run_disposition(file(wv, [dict(finding="C1", decision="waive", reason=KEY, expires="2026-12-10")]))
+    t = record(wv)
+    assert "C1: the reason does not mention anything from this finding" in t and "**0 of 2 finding(s) have a decision" in t
