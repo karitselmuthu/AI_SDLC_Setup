@@ -148,6 +148,43 @@ def add_doc(pid, data):
     return p
 
 
+GITHUB = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+
+
+def clone_repo(pid, p, url):
+    """Copy a GitHub repository into the project folder, with the git login this computer already has. No token is asked for or stored, and nothing is pushed."""
+    m = GITHUB.match((url or "").strip())
+    if not m:
+        raise ValueError("Give the address as https://github.com/owner/name.")
+    if p["repo"]:
+        raise ValueError("This project already has a repository set.")
+    dest = pdir(pid) / "repo"
+    if dest.exists():
+        raise ValueError("A repository folder already exists for this project.")
+    r = subprocess.run(["git", "clone", "-q", "--", f"https://github.com/{m.group(1)}/{m.group(2)}.git", str(dest)], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                       env=dict(os.environ, GIT_TERMINAL_PROMPT="0"), timeout=300)
+    if r.returncode:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise ValueError("Could not copy the repository (is it private, and is this computer logged in to GitHub?): " + r.stderr.strip()[-300:])
+    p["repo"], p["github"] = str(dest.resolve()), f"{m.group(1)}/{m.group(2)}"
+
+
+def github_issues(pid, p):
+    """Open issues of the project's GitHub repository (read-only, by the gh program), saved as an issues file for Triage."""
+    if not p.get("github"):
+        raise ValueError("Copy the repository from GitHub first.")
+    r = subprocess.run(["gh", "issue", "list", "--repo", p["github"], "--state", "open", "--limit", "100", "--json", "number,title,body,author"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    if r.returncode:
+        raise ValueError("Could not read the issues (is gh installed and logged in?): " + r.stderr.strip()[-300:])
+    rows = [dict(id=f"GH-{i['number']}", title=i["title"], description=i.get("body") or "", requester=(i.get("author") or {}).get("login", "")) for i in json.loads(r.stdout)]
+    if not rows:
+        raise ValueError("The repository has no open issues.")
+    (pdir(pid) / "inputs/github-issues.json").write_text(json.dumps(rows, indent=1))
+    p["docs"] = [x for x in p["docs"] if x["name"] != "github-issues.json"] + [dict(name="github-issues.json", kind="issues")]
+    return len(rows)
+
+
 def draft_ticket(pid, p, by):
     """The first build ticket for a new project, assembled by code (no model) from the approved architect baseline. The person who clicks is the approver."""
     st = next(x for x in steps_status(pid, "architect") if x["name"] == "handoff")
@@ -186,6 +223,10 @@ def settings(pid, data):
         for args in (["init", "-q"], ["add", "README.md"], ["commit", "-q", "-m", "Start the project"]):
             subprocess.run(git + args, check=True, capture_output=True, stdin=subprocess.DEVNULL)
         p["repo"] = str(r.resolve())
+    if data.get("clone_url"):
+        clone_repo(pid, p, data["clone_url"])
+    if data.get("github_issues"):
+        data["_n"] = github_issues(pid, p)
     if data.get("draft_ticket"):
         by = (data.get("approved_by") or "").strip()
         if len(by) < 2:

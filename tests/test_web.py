@@ -181,6 +181,44 @@ def test_the_first_ticket_comes_only_from_an_approved_baseline_and_names_its_app
     assert st == 200 and p["ticket"] is True and "Approved by Asha" in ticket and "R-001: Take in PDFs. Acceptance: Proposed: every PDF is taken in" in ticket and "Q1" not in ticket
 
 
+def fake_github(monkeypatch, issues=None, clone_rc=0):
+    real, seen = subprocess.run, []
+
+    def run(cmd, *a, **k):
+        seen.append(cmd)
+        if cmd[:2] == ["git", "clone"]:
+            if clone_rc == 0:
+                real(["git", "init", "-q", cmd[-1]], check=True)
+            return subprocess.CompletedProcess(cmd, clone_rc, "", "fatal: repository not found" if clone_rc else "")
+        if cmd[0] == "gh":
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(issues or []), "")
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(app.subprocess, "run", run)
+    return seen
+
+
+def test_a_github_repository_is_copied_and_its_issues_are_fetched(web, tmp_path, monkeypatch):
+    seen = fake_github(monkeypatch, issues=[dict(number=7, title="Crash on empty file", body="It crashes.", author=dict(login="sam"))])
+    pid = new(web)
+    for bad in ("http://github.com/a/b", "https://github.com/a", "https://evil.com/a/b", "https://github.com/a/b; rm -rf x", "git@github.com:a/b.git"):
+        assert web("POST", f"/api/projects/{pid}/settings", dict(clone_url=bad))[0] == 400
+    assert not any(c[:2] == ["git", "clone"] for c in seen)  # a bad address never reaches git
+    assert web("POST", f"/api/projects/{pid}/settings", dict(github_issues=True))[0] == 400  # nothing copied yet
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/karitselmuthu/Enterprise_LLM_Transfomer", github_issues=True))
+    assert st == 200 and p["github"] == "karitselmuthu/Enterprise_LLM_Transfomer" and p["repo"] == str((tmp_path / "projects" / pid / "repo").resolve())
+    assert next(c for c in seen if c[:2] == ["git", "clone"])[3] == "--"
+    rows = json.loads((tmp_path / "projects" / pid / "inputs/github-issues.json").read_text())
+    assert rows == [dict(id="GH-7", title="Crash on empty file", description="It crashes.", requester="sam")] and dict(name="github-issues.json", kind="issues") in p["docs"]
+    assert web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/a/b"))[0] == 400  # never replaces a repository
+
+
+def test_a_failed_copy_leaves_nothing_behind(web, tmp_path, monkeypatch):
+    fake_github(monkeypatch, clone_rc=128)
+    pid = new(web)
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/a/b"))
+    assert st == 400 and "repository not found" in p["error"] and not (tmp_path / "projects" / pid / "repo").exists() and view(web, pid)["project"]["repo"] == ""
+
+
 # ---------------------------------------------------------------- security -------------------------------------------
 
 def test_only_localhost_hosts_are_served(web):
