@@ -639,3 +639,12 @@ def test_disposition_needs_no_file_when_the_report_routes_nothing(web, tmp_path)
     (rb / "review-report.md").write_text("## Routed for human disposition (x)\n- **C1** (High, Confirmed, S): b | i | src/a.py:1\n## Review coverage\n")
     with pytest.raises(ValueError, match="Add the tech lead's decisions first"):
         app.step_args(app.load(pid), "review", "disposition")
+
+
+def test_the_release_plan_gets_the_aws_profile_when_one_is_added(web, tmp_path):
+    pid = new(web)
+    p = app.load(pid)
+    assert app.step_args(p, "release", "plan") == []
+    assert web("POST", f"/api/projects/{pid}/docs", dict(name="aws.json", text="{}", kind="aws"))[0] == 200
+    d = tmp_path / "projects" / pid / "inputs"
+    assert app.step_args(app.load(pid), "release", "plan") == ["--aws-profile", str(d / "aws.json")]

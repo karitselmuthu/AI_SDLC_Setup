@@ -45,7 +45,7 @@ MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_age
 NEVER_AUTO = {("release", "promote"), ("sre", "remediate")}  # "Run all" never starts a production change; a person starts it, then authorizes the exact commands
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".jsonl", ".log", ".yaml", ".yml", ".html"}
-DOC_KINDS = ("waiver", "issues", "meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
+DOC_KINDS = ("aws", "waiver", "issues", "meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
 MAX_UPLOAD = 5_000_000
 MAX_BODY = 12_000_000
 TOKEN = secrets.token_urlsafe(24)
@@ -415,7 +415,9 @@ def step_args_rest(p, agent, step, d, src, notes):
             if not p["repo"]:
                 raise ValueError("Set the repository folder first (under 'Coder setup'): the release commands run there.")
             return ["--repo", p["repo"]]
-        return ["--repo", p["repo"]] if p["repo"] and step in ("readiness", "plan") else []  # the repository is evidence for which release targets apply
+        aws = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "aws"]
+        extra = ["--aws-profile", aws[-1]] if step == "plan" and aws else []  # the AWS Lambda profile: the deploy, health and rollback commands are generated from it
+        return (["--repo", p["repo"]] if p["repo"] and step in ("readiness", "plan") else []) + extra  # the repository is evidence for which release targets apply
     if agent == "review" and step == "disposition":
         w = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "waiver"]
         rep = pdir(p["id"]) / "review" / "briefs" / "review-report.md"
