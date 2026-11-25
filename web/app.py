@@ -185,6 +185,41 @@ def github_issues(pid, p):
     return len(rows)
 
 
+README_HEADS = re.compile(r"(?i)^(scope|limitations?|known (issues|limitations)|to-?do|roadmap|future work|not (yet )?supported)\b")
+
+
+def readme_sections(text):
+    """[(heading, body)] for the README sections that state scope, limits or open work, copied word for word. Nothing is added."""
+    lines, out, i = text.splitlines(), [], 0
+    while i < len(lines):
+        m = re.match(r"(#{1,6})\s+(.*?)\s*#*\s*$", lines[i])
+        if m and README_HEADS.match(m.group(2)):
+            j = i + 1
+            while j < len(lines) and not (re.match(r"(#{1,6})\s", lines[j]) and len(re.match(r"#+", lines[j]).group(0)) <= len(m.group(1))):
+                j += 1
+            body = "\n".join(lines[i + 1:j]).strip()
+            if body:
+                out.append((m.group(2).strip(), body))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def readme_issues(pid, p):
+    """The repository's README is the backlog when there are no issues: each scope, limitation or roadmap section becomes one item for Triage."""
+    if not p["repo"]:
+        raise ValueError("Set or copy the repository first.")
+    readme = next((f for f in sorted(pathlib.Path(p["repo"]).glob("*")) if f.is_file() and f.name.lower().startswith("readme")), None)
+    secs = readme_sections(readme.read_text(errors="ignore")) if readme else []
+    if not secs:
+        raise ValueError("The README has no Scope, Limitations, Known issues, To do or Roadmap section.")
+    rows = [dict(id=f"README-{n}", title=f"Close the gaps stated in the README section '{h}'", description=b, requester=readme.name) for n, (h, b) in enumerate(secs, 1)]
+    (pdir(pid) / "inputs/readme-scope.json").write_text(json.dumps(rows, indent=1))
+    p["docs"] = [x for x in p["docs"] if x["name"] != "readme-scope.json"] + [dict(name="readme-scope.json", kind="issues")]
+    return len(rows)
+
+
 def draft_ticket(pid, p, by):
     """The first build ticket for a new project, assembled by code (no model) from the approved architect baseline. The person who clicks is the approver."""
     st = next(x for x in steps_status(pid, "architect") if x["name"] == "handoff")
@@ -204,6 +239,14 @@ def draft_ticket(pid, p, by):
 
 def settings(pid, data):
     p = load(pid)
+    try:
+        apply_settings(pid, data, p)
+    finally:
+        save(pid, p)  # what was done before an error is kept, so a copied repository is never left unrecorded
+    return p
+
+
+def apply_settings(pid, data, p):
     if "repo" in data:
         repo = (data["repo"] or "").strip()
         if repo:
@@ -227,6 +270,8 @@ def settings(pid, data):
         clone_repo(pid, p, data["clone_url"])
     if data.get("github_issues"):
         data["_n"] = github_issues(pid, p)
+    if data.get("readme_scope"):
+        readme_issues(pid, p)
     if data.get("draft_ticket"):
         by = (data.get("approved_by") or "").strip()
         if len(by) < 2:
@@ -241,8 +286,6 @@ def settings(pid, data):
         p["actions"] = [c.strip()[:200] for c in data["actions"] if isinstance(c, str) and c.strip()][:5]
     if "checks" in data:
         p["checks"] = [c.strip()[:200] for c in data["checks"] if isinstance(c, str) and c.strip()][:10]
-    save(pid, p)
-    return p
 
 
 # ------------------------------------------------------------------------------------------------ status

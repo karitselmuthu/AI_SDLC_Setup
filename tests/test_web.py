@@ -212,11 +212,39 @@ def test_a_github_repository_is_copied_and_its_issues_are_fetched(web, tmp_path,
     assert web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/a/b"))[0] == 400  # never replaces a repository
 
 
+def test_a_copy_is_kept_even_when_the_next_action_in_the_same_request_fails(web, tmp_path, monkeypatch):
+    fake_github(monkeypatch, issues=[])  # the copy works, the issue fetch finds nothing and is refused
+    pid = new(web)
+    assert web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/a/b", github_issues=True))[0] == 400
+    assert view(web, pid)["project"]["repo"].endswith("/repo")
+
+
 def test_a_failed_copy_leaves_nothing_behind(web, tmp_path, monkeypatch):
     fake_github(monkeypatch, clone_rc=128)
     pid = new(web)
     st, p = web("POST", f"/api/projects/{pid}/settings", dict(clone_url="https://github.com/a/b"))
     assert st == 400 and "repository not found" in p["error"] and not (tmp_path / "projects" / pid / "repo").exists() and view(web, pid)["project"]["repo"] == ""
+
+
+README = """# App\n\n## Quick start\nrun it\n\n## Scope\n\nThis is a lab. The decoder is sequential.\n\n### Detail\nOnly simulations.\n\n## Known limitations\n- no GPU\n\n## Empty scope\n## License\nMIT\n"""
+
+
+def test_readme_sections_that_state_scope_become_triage_items_word_for_word(web, tmp_path):
+    pid = new(web)
+    assert web("POST", f"/api/projects/{pid}/settings", dict(readme_scope=True))[0] == 400  # no repository yet
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    assert web("POST", f"/api/projects/{pid}/settings", dict(repo=str(repo)))[0] == 200
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(readme_scope=True))
+    assert st == 400 and "no Scope" in p["error"]  # no README at all
+    (repo / "README.md").write_text(README)
+    st, p = web("POST", f"/api/projects/{pid}/settings", dict(readme_scope=True))
+    rows = json.loads((tmp_path / "projects" / pid / "inputs/readme-scope.json").read_text())
+    assert st == 200 and dict(name="readme-scope.json", kind="issues") in p["docs"]
+    assert [r["id"] for r in rows] == ["README-1", "README-2"]  # the empty section and the others are left out
+    assert rows[0]["description"] == "This is a lab. The decoder is sequential.\n\n### Detail\nOnly simulations." and rows[1]["description"] == "- no GPU"
+    assert "Scope" in rows[0]["title"] and rows[0]["requester"] == "README.md"
 
 
 # ---------------------------------------------------------------- security -------------------------------------------
