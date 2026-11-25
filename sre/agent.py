@@ -523,6 +523,26 @@ def auth_path(briefs):
     return briefs / "action-authorization.json"
 
 
+HIGH_RISK_MAX_DAYS, SECOND = 7, "Service owner (accepts the risk of a High risk action)"
+
+
+def high_risk_waiver(w):
+    """Why the policy's High-risk waiver does not hold, or ''. A bare true is not enough: it needs a reason and a short expiry, and a second person approves the run."""
+    if not isinstance(w, dict):
+        return "the policy has no High-risk waiver (allow_high_risk: {reason, expires})"
+    if len(str(w.get("reason", "")).split()) < 12:
+        return "the High-risk waiver needs a reason of at least 12 words"
+    try:
+        d = datetime.strptime(str(w.get("expires", "")), "%Y-%m-%d").date()
+    except ValueError:
+        return "the High-risk waiver needs an expiry date (YYYY-MM-DD)"
+    if d < now().date():
+        return f"the High-risk waiver expired on {d}"
+    if (d - now().date()).days > HIGH_RISK_MAX_DAYS:
+        return f"a High-risk waiver can last at most {HIGH_RISK_MAX_DAYS} days"
+    return ""
+
+
 def refusal(policy, entry, name):
     """Why an allowlisted action must not run, or ''."""
     env = entry.get("environment", "")
@@ -530,8 +550,8 @@ def refusal(policy, entry, name):
         return "the policy does not allow remediation (read-only is the default)"
     if policy.get("environments") and env not in policy["environments"]:
         return f"the policy does not allow changes in environment '{env or 'not stated'}'"
-    if entry.get("risk") == "High" and not policy.get("allow_high_risk"):
-        return "the action is High risk and the policy does not allow High risk actions"
+    if entry.get("risk") == "High" and (why := high_risk_waiver(policy.get("allow_high_risk"))):
+        return "the action is High risk and " + why
     if not entry.get("command") or not entry.get("target"):
         return "the allowlist entry needs a command and a fixed target"
     verify = entry.get("verify") or []
@@ -587,7 +607,10 @@ def do_action(briefs, name, entry, policy, cwd, policy_path, allowlist_path):
           f"  then check independently: " + "; ".join(f"{v['name']} ({RL.scrub(v['command'])})" for v in verify) + (f"\n  rollback: {RL.scrub(entry['rollback'])}" if entry.get("rollback") else ""))
     if not approve(f"{role.split(' (')[0]} authorizes this action"):
         return dict(ran=False, verified=False, text=f"## Action: {name}\nNot authorized by {role.split(' (')[0]}; nothing ran.")
-    auth_path(briefs).write_text(json.dumps(dict(action=name, target=entry["target"], environment=entry.get("environment", ""), command=RL.scrub(cmd), approver_role=role,
+    second = entry.get("risk") == "High"
+    if second and not approve(f"{SECOND.split(' (')[0]} accepts the risk of the High risk action '{name}' (waiver until {policy['allow_high_risk']['expires']})"):
+        return dict(ran=False, verified=False, text=f"## Action: {name}\nNot run: the second approver ({SECOND.split(' (')[0]}) did not accept the High risk.")
+    auth_path(briefs).write_text(json.dumps(dict(action=name, target=entry["target"], environment=entry.get("environment", ""), command=RL.scrub(cmd), approver_role=role, second_approver_role=SECOND if second else "",
                                                  policy_sha256=sha_of(policy_path) if policy_path else "", allowlist_sha256=sha_of(allowlist_path) if allowlist_path else "",
                                                  at=now().isoformat(timespec="seconds")), indent=1))
     baseline.log_approval(briefs, "remediate-authorization", auth_path(briefs), role)
@@ -595,7 +618,7 @@ def do_action(briefs, name, entry, policy, cwd, policy_path, allowlist_path):
     time.sleep(min(int(entry.get("settle_s", 0)), 120))
     post = [(v, RL.run_cmd(RL.shell_cmd(v["command"]), cwd, 120)) for v in verify]
     verified = res["rc"] == 0 and all(RL.passes(v.get("pass", "exit 0"), r["rc"], r["out"]) for v, r in post)
-    text = (f"## Action: {name}\n| Field | Value |\n|---|---|\n| Authorized by | {role.split(' (')[0]} |\n| Target | {entry['target']} ({entry.get('environment', 'environment not stated')}) |\n"
+    text = (f"## Action: {name}\n| Field | Value |\n|---|---|\n| Authorized by | {role.split(' (')[0]}{' and ' + SECOND.split(' (')[0] + ' (High risk waiver)' if second else ''} |\n| Target | {entry['target']} ({entry.get('environment', 'environment not stated')}) |\n"
             f"| Command | `{RL.scrub(cmd)}` |\n| Risk | {entry.get('risk', 'not stated')} |\n| Result | {'rc 0' if res['rc'] == 0 else 'FAILED (' + str(res['rc']) + ')'} in {res['secs']}s |\n| Time | {now():%Y-%m-%d %H:%M:%S} UTC |\n"
             + (f"\n```\n{res['tail']}\n```\n" if res["rc"] != 0 and res["tail"] else "")
             + "\n### Post-action health (independent signals)\n| Check | Result |\n|---|---|\n" + "\n".join(f"| {v['name']} | {'PASS' if RL.passes(v.get('pass', 'exit 0'), r['rc'], r['out']) else 'FAIL'} |" for v, r in post)

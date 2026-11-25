@@ -22,7 +22,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
 ## Contents
 
 [How the pieces fit](#how-the-pieces-fit) · [Quick start](#quick-start) · [Ideas that apply everywhere](#ideas-that-apply-everywhere) ·
-[Triage agent](#triage-agent-4-steps) · [Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-9-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [SRE agent](#sre-agent-9-steps) · [Web page](#web-page) ·
+[Triage agent](#triage-agent-4-steps) · [Architect agent](#architect-agent-12-steps) · [Coding agent](#coding-agent-9-steps) · [Review agent](#review-agent-10-steps) · [QA agent](#qa-agent-10-steps) · [Release agent](#release-agent-9-steps) · [SRE agent](#sre-agent-9-steps) · [Web page](#web-page) ·
 [Repository layout](#repository-layout) · [Testing](#testing) · [Adding a step](#adding-or-changing-a-step) · [Limits](#limits)
 
 ## How the pieces fit
@@ -40,7 +40,7 @@ Facts (test results, counts, verdicts, status) are computed by plain code from r
    Coding agent (9 steps)      ->  change on a new branch + tests + pull-request text
             |                       reviewer decides on the merge (the agent never merges or pushes)
             v
-   Review agent (9 steps)      ->  findings with file and line evidence, scorecard
+   Review agent (10 steps)     ->  findings with file and line evidence, scorecard, dispositions
             |                       unresolved High findings go to a person
             v
    QA agent (10 steps)         ->  test evidence, defects, quality recommendation
@@ -339,7 +339,7 @@ use, and never resolves one silently. A ticket that does not state its approval 
 acceptance criteria and that **every one is covered by a plan step**. It uses the same shared safety rules as the architect (documents are
 data, the injection pre-scan, the agent cannot claim approval). Rules are in `docs/coder/_rules.md`.
 
-## Review agent (9 steps)
+## Review agent (10 steps)
 
 A senior engineering reviewer for one proposed change. It **reviews only**: its tools are read-only, so it cannot edit code, run tests, approve a release or merge.
 Every step writes to `review/briefs/`, and a named person approves it.
@@ -355,11 +355,14 @@ Every step writes to `review/briefs/`, and a named person approves it.
 | 7 | `cost` | Code-level cost drivers and possible effects on stated compliance controls | `cost-compliance-findings.md` | yes |
 | 8 | `verify` | Re-reads the code for every finding: Confirmed, Handled elsewhere, Question, Recommendation or Withdrawn | `verification.md` | yes |
 | 9 | `report` | The review summary and overall status, prioritized findings, a scorecard by dimension (correctness, design fit, security, privacy, maintainability, reliability, accessibility, cost, compliance applicability), the findings routed for human disposition, coverage and limitations | `review-report.md` | no |
+| 10 | `disposition` | The tech lead's decision on every Critical or High finding the report routes: `fix`, `defer` or `waive`. A waiver needs a reason of 12+ words and an expiry (at most 30 days for High, 14 for Critical); a Critical waiver also needs a second approver (the Release manager). Bound to the report's hash | `disposition-record.md` (+ `dispositions.json`) | no |
 
 ```bash
 python review/agent.py context TICKET [FILE...] --repo PATH [--base REF]   # default: the uncommitted work; --base compares against a commit or branch
 python review/agent.py correctness --repo PATH                             # then interfaces, security, reliability, accessibility, cost, verify, report
 ```
+
+**Waivers.** Only a fix removes a finding. `python review/agent.py disposition --dispositions FILE.json` takes a list of `{finding, decision, reason, expires}`; `finding` is an id from the report's routed list (a scanner finding is `Scanner path:line`). Entries the code does not accept (not routed, reason too short, expiry missing, too long or past, second approver declined) are listed under "Not accepted". The Release gate "Code review complete, no open high-risk finding" is MET only while every routed finding has a waiver that is approved, unexpired and written against the current report; it then says "Waived, not fixed". `fix` and `defer` never clear it, and an edited report voids every waiver. The same rule applies to the SRE agent: a High-risk action needs a policy waiver (`allow_high_risk: {reason, expires}`, 12+ words, at most 7 days) and a second approval from the service owner.
 
 **Severity scale** (the same everywhere in the report):
 
@@ -532,7 +535,7 @@ computer's browser can approve. Documents can only be read from a fixed list of 
 ```
 architect/        Architect agent: agent.py (STEPS table, checks, approval loop), baseline.py (approval ledger, versioned baseline)
 coder/            Coding agent: agent.py (steps and checks), adapters.py (stack checks), stack.py, diffscan.py, handoff.py
-review/           Review agent: agent.py (nine steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
+review/           Review agent: agent.py (ten steps, evidence and verdict checks, code-built scorecard), adapters.py (stack areas and unsupported languages)
 qa/               QA agent: agent.py (ten steps, checks, execution, recommendation)
 triage/           Triage agent: agent.py (import, readiness rules, prioritize checks, scope)
 sre/              SRE agent: agent.py (nine steps, remediation gates, recovery, review facts), evidence.py (snapshots, burn rates, alert rules)
@@ -632,6 +635,7 @@ Shown for the Architect; the Coding and QA agents use the same `STEPS` table pat
 - The QA agent runs only the checks the stack adapters can run here. Anything else (for example performance, accessibility, security tools) is listed as a gap for a person or specialist, never reported as passed.
 - Only the Architect and Coding agents have been run step by step with the real model on a real project; the QA agent's steps 1 to 4 and a full run were checked on one small ticket, and the token and cost figures for the Architect and Coding agents are estimates.
 - The Triage agent reads files, not an issue tracker, and nothing forces the Architect to start from the approved scope yet. Readiness is a checklist of what is written down, not a judgment that the idea is good. It has been run once with the real model on made-up issues (about $0.08).
+- A waiver is a recorded decision, not proof that the risk is acceptable. The "second approver" is a second click on a page with no login, so one person can still give both approvals; the roles are recorded, the identities are not verified.
 - Skipping a step is available on the web page only, not from the command line. Release and SRE steps cannot be skipped.
 - The SRE agent reads snapshot files, not live monitoring: it is only as trustworthy as whoever collects them, and it cannot tell that evidence came from a different environment than the action. It has been run once with the real model on made-up incident data (5 model steps, about $1.14), not on a real service. Traces are not read yet. The page works on one selected incident at a time, and a closed incident is not reopened (open a new one). The incident split has been run with the real model on made-up data (one incident, a service refresh, a pin, a second incident; triage cost about $0.55), not on a real service. Documents in the same folder as an input are readable by the model.
 - The Release agent has been tested with canned model replies and one real run (a model-drafted record and plan, about $1.6 for 5 model calls) against fake local shell scripts, not a real deployment. Unsupported targets are reported, not blocked: there is no way yet to record a specialist's sign-off, so the Release Manager reads the warning and decides. It cannot verify a container image digest or read a build system, secret manager or monitoring tool: it runs the checks the approved plan names and records what they return. A Critical or High review finding blocks production and there is no waiver mechanism yet; a person must resolve it and re-run the review.

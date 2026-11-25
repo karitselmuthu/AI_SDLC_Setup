@@ -234,6 +234,31 @@ def sibling(agent, mod, file):
     return p.read_text(), "OK", ""
 
 
+def waiver_state(report, n):
+    """The review report routes n Critical or High findings. They are covered only by valid waivers: approved record, same report, not expired. fix and defer never clear them."""
+    ids = RV.routed(report)
+    _, st, why = sibling("review", RV, "disposition-record.md")
+    f = HERE.parent / "review" / "briefs" / "dispositions.json"
+    if st != "OK" or not f.exists():
+        return "UNMET", f"{n} Critical or High finding(s) are routed for human disposition and no approved waiver covers them ({why or 'no disposition record'})"
+    d = json.loads(f.read_text())
+    if d.get("report_sha256") != baseline.sha256(HERE.parent / "review" / "briefs" / "review-report.md"):
+        return "UNMET", "the review report changed after the waivers were approved: record the dispositions again"
+    by = {e["finding"]: e for e in d["entries"]}
+    open_, today = [], now().date()
+    for fid, _ in ids:
+        e = by.get(fid)
+        if not e:
+            open_.append(f"{fid} has no decision")
+        elif e["decision"] != "waive":
+            open_.append(f"{fid} is '{e['decision']}', not waived: it is still open")
+        elif datetime.strptime(e["expires"], "%Y-%m-%d").date() < today:
+            open_.append(f"{fid}'s waiver expired on {e['expires']}")
+    if open_ or len(ids) != n:
+        return "UNMET", "; ".join(open_ or [f"{n} routed finding(s) could not be matched to the record"])[:220]
+    return "OK", f"{n} finding(s) waived by the tech lead, valid until {min(e['expires'] for e in by.values() if e['finding'] in dict(ids))}: {', '.join(i for i, _ in ids)}. Waived, not fixed"
+
+
 def gates(briefs):
     """[(gate, state, evidence, what is needed, needed for non-production too)] State: MET, UNMET (the evidence fails) or MISSING (no evidence)."""
     f, out = fields(briefs), []
@@ -245,7 +270,7 @@ def gates(briefs):
     text, st, why = sibling("review", RV, "review-report.md")
     n = re.search(r"Routed for human disposition: (\d+)", text)
     if st == "OK" and n and int(n.group(1)):
-        st, why = "UNMET", f"{n.group(1)} Critical or High finding(s) are routed for human disposition and no waiver is recorded"
+        st, why = waiver_state(text, int(n.group(1)))
     add("Code review complete, no open high-risk finding", st, why or "review report approved, none routed", "resolve the findings and re-run the review")
     text, st, why = sibling("qa", Q, "qa-recommendation.md")
     if st == "OK" and "Not ready for the release decision" in text:

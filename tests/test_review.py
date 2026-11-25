@@ -64,10 +64,10 @@ def chain(rv, upto="verify"):
         R.run_step("verify", [], r)
 
 
-def test_the_agent_only_reads_and_its_nine_steps_form_a_chain():
+def test_the_agent_only_reads_and_its_ten_steps_form_a_chain():
     assert core.AGENTS["review"]["tools"] == core.RO and "Edit" not in core.AGENTS["review"]["tools"]
-    assert list(R.STEPS) == ["context", "correctness", "interfaces", "security", "reliability", "accessibility", "cost", "verify", "report"]
-    assert [s for s, v in R.STEPS.items() if v[0] == "-"] == ["report"] and all((R.PROMPTS / v[0]).exists() for v in R.STEPS.values() if v[0] != "-")
+    assert list(R.STEPS) == ["context", "correctness", "interfaces", "security", "reliability", "accessibility", "cost", "verify", "report", "disposition"]
+    assert [s for s, v in R.STEPS.items() if v[0] == "-"] == ["report", "disposition"] and all((R.PROMPTS / v[0]).exists() for v in R.STEPS.values() if v[0] != "-")
 
 
 def test_the_change_is_read_from_git_without_touching_the_index(rv):

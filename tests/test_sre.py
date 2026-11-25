@@ -491,3 +491,45 @@ def test_an_action_name_matches_even_when_the_model_added_a_bracketed_note(sr):
     p, a, mark = files(sr)  # the allowlist uses the plain name
     S.run_remediate(["A1"], p, a, str(sr["tmp"]))
     assert mark.read_text().split() == ["restart", "workers-1"] and "**VERIFIED.**" in text(sr, "action-record.md")
+
+
+WAIVER = dict(reason="The restart is the only runbook action that fits and the service is already failing for most customers right now.", expires="2026-11-26")
+
+
+def test_a_high_risk_action_needs_a_dated_waiver_with_a_reason_and_a_second_approver(sr):
+    upto(sr, "recommend")
+    hi = dict(risk="High")
+    for pol, why in ((dict(remediation="allowed"), "no High-risk waiver"), (dict(remediation="allowed", allow_high_risk=True), "no High-risk waiver"),
+                     (dict(remediation="allowed", allow_high_risk=dict(WAIVER, reason="because")), "at least 12 words"),
+                     (dict(remediation="allowed", allow_high_risk=dict(WAIVER, expires="2026-11-20")), "expired on 2026-11-20"),
+                     (dict(remediation="allowed", allow_high_risk=dict(WAIVER, expires="2026-12-30")), "at most 7 days"),
+                     (dict(remediation="allowed", allow_high_risk={"reason": WAIVER["reason"]}), "expiry date")):
+        p, a, mark = files(sr, policy=pol, entry=hi)
+        S.run_remediate(["A1"], p, a, str(sr["tmp"]))
+        assert why in text(sr, "action-record.md") and not mark.exists(), why
+
+
+def test_with_a_valid_waiver_the_second_approver_is_asked_and_both_roles_are_recorded(sr):
+    upto(sr, "recommend")
+    p, a, mark = files(sr, policy=dict(remediation="allowed", allow_high_risk=WAIVER), entry=dict(risk="High"))
+    S.run_remediate(["A1"], p, a, str(sr["tmp"]))
+    t = text(sr, "action-record.md")
+    assert mark.exists() and "| Authorized by | On-call engineer and Service owner (High risk waiver) |" in t
+    assert [x for x in sr["asked"] if "Service owner accepts the risk of the High risk action" in x and "waiver until 2026-11-26" in x]
+    assert json.loads((sr["briefs"] / "action-authorization.json").read_text())["second_approver_role"] == S.SECOND
+
+
+def test_without_the_second_approvers_yes_a_high_risk_action_does_not_run(sr):
+    upto(sr, "recommend")
+    p, a, mark = files(sr, policy=dict(remediation="allowed", allow_high_risk=WAIVER), entry=dict(risk="High"))
+    calls = []
+    S.approve = lambda who: calls.append(who) or "Service owner" not in who
+    S.run_remediate(["A1"], p, a, str(sr["tmp"]))
+    assert not mark.exists() and "the second approver (Service owner) did not accept the High risk" in text(sr, "action-record.md") and len(calls) == 2
+
+
+def test_a_low_risk_action_never_asks_for_a_second_approver(sr):
+    upto(sr, "recommend")
+    p, a, mark = files(sr)
+    S.run_remediate(["A1"], p, a, str(sr["tmp"]))
+    assert mark.exists() and not [x for x in sr["asked"] if "Service owner" in x]

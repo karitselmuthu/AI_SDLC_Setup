@@ -45,7 +45,7 @@ MODS = {"architect": architect_agent, "coder": coder_agent, "review": review_age
 NEVER_AUTO = {("release", "promote"), ("sre", "remediate")}  # "Run all" never starts a production change; a person starts it, then authorizes the exact commands
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,70}$")
 UPLOAD_EXT = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".json", ".jsonl", ".log", ".yaml", ".yml", ".html"}
-DOC_KINDS = ("issues", "meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
+DOC_KINDS = ("waiver", "issues", "meeting", "release", "sre", "evidence", "incident", "allowlist", "policy", "recovery")
 MAX_UPLOAD = 5_000_000
 MAX_BODY = 12_000_000
 TOKEN = secrets.token_urlsafe(24)
@@ -61,7 +61,8 @@ LABELS = {
               "review": "Review the change", "pr": "Prepare the pull request", "handoff": "Human handoff to the reviewer"},
     "review": {"context": "Establish review context", "correctness": "Correctness and design fit", "interfaces": "Interfaces and compatibility",
                "security": "Security and privacy", "reliability": "Reliability and performance", "accessibility": "Accessibility and usability",
-               "cost": "Cost and compliance implications", "verify": "Verify the findings", "report": "Findings and scorecard"},
+               "cost": "Cost and compliance implications", "verify": "Verify the findings", "report": "Findings and scorecard",
+               "disposition": "Disposition of Critical and High findings"},
     "qa": {"scope": "Review requirements and scope", "risk": "Assess quality risk", "coverage": "Select test coverage", "design": "Design scenarios and data",
            "automate": "Create automated tests", "execute": "Execute and analyze tests", "explore": "Exploratory and regression testing",
            "nonfunctional": "Non-functional quality", "defects": "Report and track defects", "recommend": "Quality recommendation"},
@@ -218,6 +219,27 @@ def briefs_of(pid, agent, step=None):
         return d / "service" / "briefs"
     inc = load(pid).get("incident")
     return d / "incidents" / inc / "briefs" if inc and (d / "incidents" / inc / "incident.json").exists() else None
+
+
+def usage(pid):
+    """Model use recorded by core.ask in the project's usage.jsonl, per agent and step, so a person sees what each agent's work cost. Input tokens include cache reads and writes."""
+    f = pdir(pid) / "usage.jsonl"
+    new = lambda: dict(calls=0, tokens_in=0, tokens_out=0, usd=0.0, secs=0.0)
+    by = {}
+    for line in (f.read_text().splitlines() if f.exists() else []):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        a = by.setdefault(r.get("agent", "?"), dict(new(), steps={}))
+        for row in (a, a["steps"].setdefault(r.get("step") or r.get("agent", "?"), new())):
+            row["calls"] += 1
+            row["tokens_in"] += int(r.get("input", 0)) + int(r.get("cache_write", 0)) + int(r.get("cache_read", 0))
+            row["tokens_out"] += int(r.get("output", 0))
+            row["usd"] = round(row["usd"] + float(r.get("usd", 0)), 4)
+            row["secs"] = round(row["secs"] + float(r.get("secs", 0)), 1)
+    total = {k: sum(a[k] for a in by.values()) for k in ("calls", "tokens_in", "tokens_out")} | {"usd": round(sum(a["usd"] for a in by.values()), 4)}
+    return dict(agents=by, total=total)
 
 
 def sre_incidents(pid):
@@ -394,6 +416,14 @@ def step_args_rest(p, agent, step, d, src, notes):
                 raise ValueError("Set the repository folder first (under 'Coder setup'): the release commands run there.")
             return ["--repo", p["repo"]]
         return ["--repo", p["repo"]] if p["repo"] and step in ("readiness", "plan") else []  # the repository is evidence for which release targets apply
+    if agent == "review" and step == "disposition":
+        w = [str(d / x["name"]) for x in p["docs"] if x["kind"] == "waiver"]
+        rep = pdir(p["id"]) / "review" / "briefs" / "review-report.md"
+        if not w and rep.exists() and not review_agent.routed(rep.read_text()):
+            return []  # nothing is routed for a decision, so there is nothing to disposition
+        if not w:
+            raise ValueError("Add the tech lead's decisions first (under Documents, add a JSON file as 'Dispositions and waivers'). It is a list of {finding, decision (fix, waive or defer), reason, expires}.")
+        return ["--dispositions", w[-1]]
     if agent in ("qa", "review") and step in ("recommend", "report"):
         return []
     if not p["repo"]:
@@ -561,7 +591,7 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline())
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid))
 
 
 def incident_action(pid, data):

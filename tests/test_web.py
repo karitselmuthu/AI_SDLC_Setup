@@ -463,7 +463,7 @@ def test_run_all_pauses_before_a_step_that_may_not_be_needed(web):
 def test_the_review_track_has_nine_steps_gets_its_inputs_and_suggests_skips_from_the_change(web, tmp_path):
     pid = new(web)
     v = view(web, pid)
-    assert len(v["tracks"]["review"]["steps"]) == 9 and v["tracks"]["review"]["next"] == "context"
+    assert len(v["tracks"]["review"]["steps"]) == 10 and v["tracks"]["review"]["next"] == "context"
     repo = tmp_path / "r"
     (repo / "pkg").mkdir(parents=True)
     for c in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@x.invalid", "commit", "-q", "--allow-empty", "-m", "i"]):
@@ -603,3 +603,39 @@ def test_the_triage_track_takes_issues_and_feeds_in_the_selected_incidents_sre_f
     (rev / "incident-review.md").write_text("## Follow-up actions\n")
     p["incident"] = "INC-20261124-01"
     assert app.step_args(p, "triage", "import")[-2:] == ["--sre-review", str(rev / "incident-review.md")]
+
+
+def test_usage_is_summed_per_agent_and_step_from_the_projects_usage_log(web, tmp_path):
+    pid = new(web)
+    assert view(web, pid)["usage"] == dict(agents={}, total=dict(calls=0, tokens_in=0, tokens_out=0, usd=0.0))
+    rows = [dict(agent="sre", step="sre:triage", input=4, cache_write=100, cache_read=50, output=20, usd=0.1, secs=10.0),
+            dict(agent="sre", step="sre:triage", input=1, cache_write=0, cache_read=9, output=5, usd=0.05, secs=2.5),
+            dict(agent="triage", step="triage:prioritize", input=2, cache_write=3, cache_read=5, output=7, usd=0.02, secs=1.0)]
+    (tmp_path / "projects" / pid / "usage.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+    u = view(web, pid)["usage"]
+    assert u["agents"]["sre"]["calls"] == 2 and u["agents"]["sre"]["tokens_in"] == 164 and u["agents"]["sre"]["tokens_out"] == 25 and u["agents"]["sre"]["usd"] == 0.15
+    assert u["agents"]["sre"]["steps"]["sre:triage"]["calls"] == 2 and list(u["agents"]["triage"]["steps"]) == ["triage:prioritize"]
+    assert u["total"] == dict(calls=3, tokens_in=174, tokens_out=32, usd=0.17)
+
+
+def test_the_review_track_has_a_disposition_step_that_needs_the_tech_leads_file(web):
+    pid = new(web)
+    v = view(web, pid)
+    assert [s["name"] for s in v["tracks"]["review"]["steps"]][-1] == "disposition"
+    p = app.load(pid)
+    with pytest.raises(ValueError, match="Add the tech lead's decisions first"):
+        app.step_args(p, "review", "disposition")
+    assert web("POST", f"/api/projects/{pid}/docs", dict(name="d.json", text="[]", kind="waiver"))[0] == 200
+    p = app.load(pid)
+    assert app.step_args(p, "review", "disposition")[0] == "--dispositions"
+
+
+def test_disposition_needs_no_file_when_the_report_routes_nothing(web, tmp_path):
+    pid = new(web)
+    rb = tmp_path / "projects" / pid / "review" / "briefs"
+    rb.mkdir(parents=True, exist_ok=True)
+    (rb / "review-report.md").write_text("## Routed for human disposition (Critical and High findings still standing)\nNone. No Critical or High finding is standing.\n## Review coverage\n")
+    assert app.step_args(app.load(pid), "review", "disposition") == []
+    (rb / "review-report.md").write_text("## Routed for human disposition (x)\n- **C1** (High, Confirmed, S): b | i | src/a.py:1\n## Review coverage\n")
+    with pytest.raises(ValueError, match="Add the tech lead's decisions first"):
+        app.step_args(app.load(pid), "review", "disposition")

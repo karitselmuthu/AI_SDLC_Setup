@@ -9,6 +9,7 @@
   python review/agent.py cost --repo PATH                                    7. cost and compliance implications
   python review/agent.py verify --repo PATH                                  8. re-read the code for every finding
   python review/agent.py report                                              9. findings and scorecard, built by code (no model)
+  python review/agent.py disposition --dispositions FILE.json                10. the tech lead's decision on every Critical or High finding: fix, defer or waive (code)
 It reviews. It never edits code, runs tests, approves a release or merges: tools are read-only. Every finding must cite a file and line that exist.
 Unresolved Critical and High findings are routed to a person. Facts (counts, coverage, the routed list) come from code, not from a model.
 """
@@ -25,7 +26,7 @@ PROMPTS = CODE.parent / "docs" / "review"
 sys.path.insert(0, str(CODE.parent))
 
 import core  # noqa: E402
-from core import ask, flagged, false_approval  # noqa: E402
+from core import ask, flagged, false_approval, approve  # noqa: E402
 from architect import baseline  # noqa: E402
 from coder import agent as C, diffscan  # noqa: E402
 from review import adapters  # noqa: E402
@@ -50,10 +51,14 @@ STEPS = {
     "verify": ("verify.md", "verification.md", [REVIEWER], ["correctness-findings.md", "interface-findings.md", "security-findings.md",
                                                            "reliability-findings.md", "accessibility-findings.md", "cost-compliance-findings.md"]),
     "report": ("-", "review-report.md", [REVIEWER, DISPOSITION], ["verification.md"]),
+    "disposition": ("-", "disposition-record.md", [DISPOSITION], ["review-report.md"]),
 }
+SECOND = "Release manager (accepts the residual risk of a waived Critical finding)"
+MAX_WAIVER_DAYS = {"Critical": 14, "High": 30}  # a waiver is temporary: it expires, and a longer one needs a new decision
+MIN_REASON_WORDS = 12
 PREFIX = {"correctness": "C", "interfaces": "I", "security": "S", "reliability": "R", "accessibility": "A", "cost": "K"}
 DIMENSIONS = ["correctness", "interfaces", "security", "reliability", "accessibility", "cost"]
-NEEDS_TICKET, NEEDS_REPO = {"context"}, set(STEPS) - {"report"}
+NEEDS_TICKET, NEEDS_REPO = {"context"}, set(STEPS) - {"report", "disposition"}
 # Critical: likely severe impact (broad unauthorized access, secret exposure, destructive data loss). High: significant security, privacy, correctness or
 # availability risk to important behaviour. Medium: meaningful defect with limited scope or a workaround. Low: localized, minor. Informational: a question or
 # improvement, not a confirmed defect.
@@ -415,9 +420,95 @@ def run_report():
     print("wrote:", out)
 
 
+def today():
+    return datetime.now(timezone.utc).date()  # a function so tests can set the clock
+
+
+def routed(report):
+    """[(finding id, severity)] from the report's routed list: what a person must decide on. Scanner findings are named 'Scanner file:line'."""
+    sec = report.split("## Routed for human disposition", 1)[-1].split("\n## ", 1)[0]
+    out = []
+    for ln in sec.splitlines():
+        if m := re.match(r"- \*\*([A-Z]\d+)\*\* \((Critical|High)", ln):
+            out.append((m.group(1), m.group(2)))
+        elif m := re.match(r"- \*\*Scanner\*\* \(Critical\) `([^`]+)`", ln):
+            out.append((f"Scanner {m.group(1)}", "Critical"))
+    return out
+
+
+def check_entry(e, sev):
+    """Why a disposition entry is not accepted, or ''."""
+    if e.get("decision") not in ("fix", "waive", "defer"):
+        return "decision must be fix, waive or defer"
+    if len(str(e.get("reason", "")).split()) < MIN_REASON_WORDS:
+        return f"the reason needs at least {MIN_REASON_WORDS} words: say why, not just that"
+    if e["decision"] != "waive":
+        return ""
+    try:
+        d = datetime.strptime(str(e.get("expires", "")), "%Y-%m-%d").date()
+    except ValueError:
+        return "a waiver needs an expiry date (YYYY-MM-DD)"
+    if d <= today():
+        return "the expiry date is not in the future"
+    if (d - today()).days > MAX_WAIVER_DAYS[sev]:
+        return f"a waiver of a {sev} finding can last at most {MAX_WAIVER_DAYS[sev]} days; ask again after that"
+    return ""
+
+
+def run_disposition(path):
+    name = "disposition"
+    briefs = HERE / "briefs"
+    gate(name, briefs, None)
+    report = briefs / STEPS["report"][1]
+    items = routed(report.read_text())
+    if items and not path:
+        sys.exit("disposition: pass --dispositions FILE.json, a list of {finding, decision (fix|waive|defer), reason, expires (waivers only)}.")
+    try:
+        given = json.loads(pathlib.Path(path).read_text()) if path else []
+        given = given.get("dispositions", given) if isinstance(given, dict) else given
+        assert isinstance(given, list) and all(isinstance(x, dict) for x in given)
+    except (OSError, ValueError, AssertionError):
+        sys.exit("disposition: the file must be JSON: a list of objects with finding, decision, reason and expires.")
+    sev, seen, accepted, refused = dict(items), set(), [], []
+    for e in given:
+        f = str(e.get("finding", "")).strip()
+        why = "this finding is not routed for disposition in the report" if f not in sev else "it already has a decision" if f in seen else check_entry(e, sev[f])
+        seen.add(f)
+        if why:
+            refused.append((f, why))
+        elif e["decision"] == "waive" and sev[f] == "Critical" and not approve(SECOND.split(" (")[0] + f" accepts the residual risk of the Critical finding {f} until {e['expires']}"):
+            refused.append((f, "the second approver did not accept the risk of a Critical waiver"))
+        else:
+            accepted.append(dict(finding=f, severity=sev[f], decision=e["decision"], reason=" ".join(str(e["reason"]).split()), expires=e.get("expires", "") if e["decision"] == "waive" else "",
+                                 second_approval=e["decision"] == "waive" and sev[f] == "Critical"))
+    undecided = [f for f, _ in items if f not in {a["finding"] for a in accepted}]
+    waived = [a for a in accepted if a["decision"] == "waive"]
+    status = ("**NOTHING TO DISPOSITION.** No Critical or High finding is routed." if not items else
+              f"**{len(items) - len(undecided)} of {len(items)} finding(s) have a decision; {len(waived)} waived.**" + (f" {len(undecided)} still need one: {', '.join(undecided)}." if undecided else ""))
+    row = lambda a: f"| {a['finding']} | {a['severity']} | {a['decision']} | {a['expires'] or '-'} | {'Yes' if a['second_approval'] else 'No'} | {a['reason']} |"
+    body = ("# Disposition record\n\n## Status\nDraft, pending review by the tech lead. " + status
+            + "\n\n## Decisions\n| Finding | Severity | Decision | Waiver expires | Second approval | Reason |\n|---|---|---|---|---|---|\n" + ("\n".join(map(row, accepted)) or "| - | - | - | - | - | - |")
+            + "\n\n## Not accepted\n" + ("\n".join(f"- {f}: {w}" for f, w in refused) or "None.")
+            + "\n\n## What a waiver means\nOnly fix removes a finding. A waiver is a recorded, temporary acceptance of the risk by named roles: it ends on its expiry date, and it is void if the review report changes. "
+            "The release readiness gate counts a finding as covered only while its waiver is valid. fix and defer do not clear the gate.\n"
+            f"\n## Integrity\nreview-report.md sha256: `{baseline.sha256(report)}`\n")
+    (briefs / "dispositions.json").write_text(json.dumps(dict(report_sha256=baseline.sha256(report), entries=accepted), indent=1))
+    out = briefs / STEPS[name][1]
+    Q.archive(out)
+    out.write_text(body)
+    print(body.split("## Decisions")[0])
+    if not C.signoff(briefs, name, out, STEPS[name][2]):
+        print("Not approved. Fix the file and run this step again.")
+    print("wrote:", out)
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    repo = base = None
+    repo = base = dispositions = None
+    if "--dispositions" in args:
+        i = args.index("--dispositions")
+        dispositions = args[i + 1]
+        del args[i:i + 2]
     for flag in ("--repo", "--base"):
         if flag in args:
             i = args.index(flag)
@@ -427,4 +518,4 @@ if __name__ == "__main__":
     cmd, *files = args or [""]
     if cmd not in STEPS:
         sys.exit(__doc__ + "Steps: " + ", ".join(STEPS))
-    run_report() if cmd == "report" else run_step(cmd, files, repo, base)
+    run_report() if cmd == "report" else run_disposition(dispositions) if cmd == "disposition" else run_step(cmd, files, repo, base)
