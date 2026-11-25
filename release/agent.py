@@ -235,6 +235,11 @@ def sibling(agent, mod, file):
     return p.read_text(), "OK", ""
 
 
+def waiver_warnings():
+    return [f"the waiver for {w['finding']} ends {w['expires']} ({w['days_left']} day(s) left): a later release or rollback will need a new decision"
+            for w in RV.waiver_status(HERE.parent / "review" / "briefs", now().date()) if w["state"] == "expiring"]
+
+
 def waiver_state(report, n):
     """The review report routes n Critical or High findings. They are covered only by valid waivers: approved record, same report, not expired. fix and defer never clear them."""
     ids = RV.routed(report)
@@ -246,7 +251,7 @@ def waiver_state(report, n):
     if d.get("report_sha256") != baseline.sha256(HERE.parent / "review" / "briefs" / "review-report.md"):
         return "UNMET", "the review report changed after the waivers were approved: record the dispositions again"
     by = {e["finding"]: e for e in d["entries"]}
-    open_, today = [], now().date()
+    open_, today = [], now().date()  # the release's own clock, so a test or a rehearsal sees the same days
     for fid, _ in ids:
         e = by.get(fid)
         if not e:
@@ -257,7 +262,9 @@ def waiver_state(report, n):
             open_.append(f"{fid}'s waiver expired on {e['expires']}")
     if open_ or not ids:
         return "UNMET", "; ".join(open_ or [f"{n} routed finding(s) could not be read from the review report"])[:220]
-    return "OK", f"{len(ids)} decision(s) cover the {n} routed finding(s); all waived by the tech lead, valid until {min(e['expires'] for e in by.values() if e['finding'] in dict(ids))}: {', '.join(i for i, _ in ids)}. Waived, not fixed"
+    soon = [w for w in RV.waiver_status(HERE.parent / "review" / "briefs", today) if w["state"] == "expiring"]
+    return "OK", (f"{len(ids)} decision(s) cover the {n} routed finding(s); all waived by the tech lead, valid until {min(e['expires'] for e in by.values() if e['finding'] in dict(ids))}: {', '.join(i for i, _ in ids)}. Waived, not fixed"
+                  + (f". WARNING, expiring soon: {', '.join(w['finding'] + ' (' + (str(w['days_left']) + ' day(s) left' if w['days_left'] else 'today') + ')' for w in soon)}" if soon else ""))
 
 
 def gates(briefs):
@@ -637,6 +644,7 @@ def run_promote(repo=None):
     warn += [f"{u['what']} has no release adapter: a specialist must cover it" for u in det["unsupported"]]
     warn += [w for w, hit in (("configuration is INCOMPLETE: some references were not checked", "**INCOMPLETE." in (briefs / "config-status.md").read_text()),
                              ("provenance is NOT VERIFIED (allowed outside production)", "**NOT VERIFIED." in (briefs / "provenance.md").read_text())) if hit]
+    warn += waiver_warnings()
     print("".join(f"  WARNING: {w}\n" for w in warn), end="")
     go, res = approve(f"{MANAGER.split(' (')[0]} authorizes this promotion to {env}"), []
     lock = json.loads(lock_path(briefs).read_text()) if lock_path(briefs).exists() else {}

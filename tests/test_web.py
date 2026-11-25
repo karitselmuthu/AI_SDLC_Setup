@@ -688,3 +688,15 @@ def test_the_form_file_is_exactly_what_the_disposition_step_reads(web, tmp_path)
     web("POST", f"/api/projects/{pid}/dispositions", dict(entries=[dict(finding="C1", decision="waive", reason=WHY, expires=soon)]))
     saved = json.loads((tmp_path / "projects" / pid / "inputs" / "dispositions.json").read_text())
     assert saved == [dict(finding="C1", decision="waive", reason=WHY, expires=soon)] and app.review_agent.check_entry(saved[0], "High") == ""
+
+
+def test_the_page_gets_the_waivers_with_their_days_left(web, tmp_path):
+    pid = new(web)
+    assert view(web, pid)["waivers"] == []
+    rb = tmp_path / "projects" / pid / "review" / "briefs"
+    rb.mkdir(parents=True, exist_ok=True)
+    (rb / "review-report.md").write_text("r")
+    soon = (__import__("datetime").date.today() + __import__("datetime").timedelta(days=2)).isoformat()
+    (rb / "dispositions.json").write_text(json.dumps(dict(report_sha256="x", entries=[dict(finding="C1", severity="High", decision="waive", reason="r", expires=soon, second_approval=False)])))
+    w = view(web, pid)["waivers"]
+    assert w[0]["finding"] == "C1" and w[0]["days_left"] == 2 and w[0]["state"] == "expiring" and w[0]["counts"] is False  # not approved, and the report hash differs

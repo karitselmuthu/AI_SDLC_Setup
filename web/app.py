@@ -643,7 +643,7 @@ def project_view(pid):
         dec = [json.loads(x) for x in (cb / "handoff-decisions.log").read_text().splitlines()] if (cb / "handoff-decisions.log").exists() else []
         hand = dict(ready=iss is not None, counts=handoff.counts_line(iss) if iss else "", needs_reason=handoff.needs_reason(iss) if iss else [],
                     decisions=dec[-3:])
-    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid), routed=routed_findings(pid), dispositions=saved_dispositions(pid))
+    return dict(project=p, tracks=tracks, run=r, handoff=hand, incidents=sre_incidents(pid), pipeline=pipeline(), usage=usage(pid), routed=routed_findings(pid), dispositions=saved_dispositions(pid), waivers=review_agent.waiver_status(pdir(pid) / 'review' / 'briefs'))
 
 
 def incident_action(pid, data):

@@ -122,7 +122,10 @@ function render(){const p=view.project;document.title=(view.run&&view.run.pendin
 const TITLES={triage:"Triage",architect:"Architect",coder:"Coder",review:"Review",qa:"QA",release:"Release",sre:"SRE"};
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1e3?(n/1e3).toFixed(1)+"k":String(n);
 let dispDraft={};
-function dispForm(el){const rt=view.routed||[];if(!rt.length)return;const prev={...Object.fromEntries((view.dispositions||[]).map(d=>[d.finding,d])),...dispDraft};
+function waiverBar(el){const w=view.waivers||[];if(!w.length)return;
+ el.append(h("div",{style:"margin-top:12px"},h("b",{},"Active waivers"),...w.map(x=>h("div",{class:"roles",style:x.state==="expired"?"color:var(--bad)":x.state==="expiring"?"color:var(--warn)":""},
+  `${x.finding} (${x.severity}): ${x.state==="expired"?`EXPIRED on ${x.expires}`:x.state==="expiring"?`expires ${x.expires}, ${x.days_left} day(s) left`:`valid until ${x.expires}`}${x.counts?"":" (does not count now: the record is not approved or the report changed)"}`))))}
+function dispForm(el){const rt=view.routed||[];waiverBar(el);if(!rt.length)return;const prev={...Object.fromEntries((view.dispositions||[]).map(d=>[d.finding,d])),...dispDraft};
  const rows=rt.map(f=>{const p=prev[f.id]||{};const sel=h("select",{},...[["","No decision yet"],["fix","Fix (re-run the review after)"],["defer","Defer"],["waive","Waive (temporary risk acceptance)"]].map(([v,t])=>h("option",{value:v,...(p.decision===v?{selected:true}:{})},t)));
   const why=h("textarea",{style:"min-height:44px",placeholder:"Why (at least 12 words): what makes this acceptable or when it will be fixed"},p.reason||"");const exp=h("input",{type:"date",value:p.expires||"",title:"Waivers only: when the waiver ends"});
   const keep=()=>{dispDraft[f.id]={finding:f.id,decision:sel.value,reason:why.value,expires:exp.value}};sel.onchange=why.oninput=exp.onchange=keep;

@@ -56,6 +56,7 @@ STEPS = {
 SECOND = "Release manager (accepts the residual risk of a waived Critical finding)"
 MAX_WAIVER_DAYS = {"Critical": 14, "High": 30}  # a waiver is temporary: it expires, and a longer one needs a new decision
 MIN_REASON_WORDS = 12
+EXPIRY_WARN_DAYS = 3  # a waiver this close to its end is shown as expiring, so nobody finds out on release day
 PREFIX = {"correctness": "C", "interfaces": "I", "security": "S", "reliability": "R", "accessibility": "A", "cost": "K"}
 DIMENSIONS = ["correctness", "interfaces", "security", "reliability", "accessibility", "cost"]
 NEEDS_TICKET, NEEDS_REPO = {"context"}, set(STEPS) - {"report", "disposition"}
@@ -492,6 +493,25 @@ def check_entry(e, sev, text="", used=None):
     if (d - today()).days > MAX_WAIVER_DAYS[sev]:
         return f"a waiver of a {sev} finding can last at most {MAX_WAIVER_DAYS[sev]} days; ask again after that"
     return ""
+
+
+def waiver_status(briefs, on=None):
+    """Every waiver in the recorded dispositions with its days left: state is 'expired', 'expiring' (EXPIRY_WARN_DAYS or fewer left) or 'valid'. 'counts' says whether it
+    can cover a finding right now: the record is approved and written against the current report. Read only; the Release gate makes the decision."""
+    briefs, on = pathlib.Path(briefs), on or today()
+    f, rep = briefs / "dispositions.json", briefs / STEPS["report"][1]
+    if not f.exists() or not rep.exists():
+        return []
+    d = json.loads(f.read_text())
+    counts = not baseline.problems(briefs, {"disposition": STEPS["disposition"]}) and d.get("report_sha256") == baseline.sha256(rep)
+    out = []
+    for e in d["entries"]:
+        if e["decision"] != "waive":
+            continue
+        left = (datetime.strptime(e["expires"], "%Y-%m-%d").date() - on).days
+        out.append(dict(finding=e["finding"], severity=e["severity"], expires=e["expires"], days_left=left, counts=counts and left >= 0,
+                        state="expired" if left < 0 else "expiring" if left <= EXPIRY_WARN_DAYS else "valid"))
+    return sorted(out, key=lambda x: x["days_left"])
 
 
 def run_disposition(path):

@@ -196,3 +196,38 @@ def test_an_unrelated_reason_is_listed_as_not_accepted_in_the_record(wv):
     R.run_disposition(file(wv, [dict(finding="C1", decision="waive", reason=KEY, expires="2026-12-10")]))
     t = record(wv)
     assert "C1: the reason does not mention anything from this finding" in t and "**0 of 2 finding(s) have a decision" in t
+
+
+def test_waiver_status_counts_the_days_left_and_says_when_a_waiver_stops_counting(wv):
+    R.run_disposition(file(wv, entries(("C1", "waive", "2026-11-26"), ("Scanner src/new.py:1", "waive", "2026-12-05"))))
+    st = R.waiver_status(wv["briefs"], TODAY)
+    assert [(w["finding"], w["days_left"], w["state"], w["counts"]) for w in st] == [("C1", 2, "expiring", True), ("Scanner src/new.py:1", 11, "valid", True)]
+    late = R.waiver_status(wv["briefs"], datetime.date(2026, 11, 27))
+    assert [(w["state"], w["counts"]) for w in late] == [("expired", False), ("valid", True)]
+    assert R.waiver_status(wv["briefs"], datetime.date(2026, 11, 26))[0]["days_left"] == 0 and R.waiver_status(wv["briefs"], datetime.date(2026, 11, 26))[0]["state"] == "expiring"
+    (wv["briefs"] / "review-report.md").write_text((wv["briefs"] / "review-report.md").read_text() + "edited\n")
+    assert not any(w["counts"] for w in R.waiver_status(wv["briefs"], TODAY))  # a changed report voids them
+
+
+def test_fix_and_defer_are_not_waivers_and_never_expire(wv):
+    R.run_disposition(file(wv, entries(("C1", "fix", None), ("Scanner src/new.py:1", "defer", None))))
+    assert R.waiver_status(wv["briefs"], TODAY) == [] and R.waiver_status(wv["briefs"].parent / "nothing", TODAY) == []
+
+
+def test_the_release_gate_stays_met_but_names_a_waiver_that_ends_soon(rl):
+    RL.run_step("request", [str(rl["req"])])
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], expires="2026-11-26")
+    g = gate(rl)
+    assert g[1] == "MET" and "WARNING, expiring soon: C1 (2 day(s) left), Scanner src/new.py:1 (2 day(s) left)" in g[2]
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], expires="2026-12-20")
+    assert "WARNING" not in gate(rl)[2]
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], expires="2026-11-24")
+    assert "expiring soon: C1 (today)" in gate(rl)[2]
+
+
+def test_the_promotion_prompt_warns_about_a_waiver_that_ends_soon(rl):
+    RL.run_step("request", [str(rl["req"])])
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], expires="2026-11-26")
+    assert [w.split(" ends")[0] for w in RL.waiver_warnings()] == ["the waiver for C1", "the waiver for Scanner src/new.py:1"] and "2 day(s) left" in RL.waiver_warnings()[0]
+    waiver_files(rl, [("C1", "waive"), ("Scanner src/new.py:1", "waive")], expires="2026-12-20")
+    assert RL.waiver_warnings() == []
